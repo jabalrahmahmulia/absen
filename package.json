@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "homepage": "https://tafakamal.github.io/absen-melati",
+  "homepage": "https://jabalrahmahmulia.github.io/absen",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
