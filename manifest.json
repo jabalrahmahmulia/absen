@@ -1,0 +1,16 @@
+{
+  "short_name": "JRM School",
+  "name": "JRM School",
+  "icons": [
+    {
+      "src": "logoJRM.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "./",
+  "background_color": "#ffffff",
+  "theme_color": "#FFA500",
+  "display": "standalone",
+  "orientation": "portrait"
+}
