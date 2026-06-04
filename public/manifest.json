@@ -1,0 +1,16 @@
+{
+  "short_name": "Melati Dental Care",
+  "name": "Melati Dental Care",
+  "icons": [
+    {
+      "src": "logo2.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "./",
+  "background_color": "#0f172a",
+  "theme_color": "#2563eb",
+  "display": "standalone",
+  "orientation": "portrait"
+}
