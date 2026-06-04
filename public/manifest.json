@@ -1,16 +1,16 @@
 {
-  "short_name": "Melati Dental Care",
-  "name": "Melati Dental Care",
+  "short_name": "JRM School",
+  "name": "JRM School",
   "icons": [
     {
-      "src": "logo2.png",
+      "src": "logoJRM.png",
       "type": "image/png",
       "sizes": "512x512"
     }
   ],
   "start_url": "./",
-  "background_color": "#0f172a",
-  "theme_color": "#2563eb",
+  "background_color": "#ffffff",
+  "theme_color": "#FFA500",
   "display": "standalone",
   "orientation": "portrait"
 }

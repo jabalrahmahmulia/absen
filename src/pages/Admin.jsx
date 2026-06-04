@@ -136,6 +136,7 @@ export default function Admin() {
   const [newToleransi, setNewToleransi] = useState(15);
   const [newStatus, setNewStatus] = useState('pegawai');
   const [newRole, setNewRole] = useState('user');
+  const [newDepartemen, setNewDepartemen] = useState('');
   const [newBatasAwalMasuk, setNewBatasAwalMasuk] = useState(60);
   const [newBatasAkhirPulang, setNewBatasAkhirPulang] = useState(240);
   const [addingUser, setAddingUser] = useState(false);
@@ -147,6 +148,7 @@ export default function Admin() {
   const [editToleransi, setEditToleransi] = useState('');
   const [editStatus, setEditStatus] = useState('');
   const [editRole, setEditRole] = useState('');
+  const [editDepartemen, setEditDepartemen] = useState('');
   const [editBatasAwalMasuk, setEditBatasAwalMasuk] = useState(60);
   const [editBatasAkhirPulang, setEditBatasAkhirPulang] = useState(240);
   const [savingUser, setSavingUser] = useState(false);
@@ -524,6 +526,7 @@ export default function Admin() {
         toleransi: newToleransi,
         status: newStatus,
         role: newRole,
+        departemen: newDepartemen,
         batasAwalMasuk: newBatasAwalMasuk,
         batasAkhirPulang: newBatasAkhirPulang,
         jadwal: newJadwal
@@ -534,6 +537,7 @@ export default function Admin() {
       setNewToleransi(15);
       setNewStatus('pegawai');
       setNewRole('user');
+      setNewDepartemen('');
       setNewBatasAwalMasuk(60);
       setNewBatasAkhirPulang(240);
       setNewJadwal(INITIAL_SCHEDULE);
@@ -551,6 +555,7 @@ export default function Admin() {
     setEditToleransi(u.toleransi || 15);
     setEditStatus(u.status || 'pegawai');
     setEditRole(u.role || 'user');
+    setEditDepartemen(u.departemen || '');
     setEditBatasAwalMasuk(u.batasAwalMasuk !== undefined ? u.batasAwalMasuk : 60);
     setEditBatasAkhirPulang(u.batasAkhirPulang !== undefined ? u.batasAkhirPulang : 240);
     
@@ -592,6 +597,7 @@ export default function Admin() {
         toleransi: editToleransi,
         status: editStatus,
         role: editRole,
+        departemen: editDepartemen,
         batasAwalMasuk: editBatasAwalMasuk,
         batasAkhirPulang: editBatasAkhirPulang,
         jadwal: editJadwal
@@ -901,6 +907,7 @@ export default function Admin() {
               <th>No WA</th>
               <th>Jam Kerja</th>
               <th>Toleransi</th>
+              <th>Departemen</th>
               <th>Status</th>
               <th>Role</th>
               <th>Aksi</th>
@@ -922,6 +929,7 @@ export default function Admin() {
                     {renderUserScheduleSummary(item)}
                   </td>
                   <td>{item.toleransi || 15} menit</td>
+                  <td>{item.departemen || '-'}</td>
                   <td>
                     <span className={`badge ${item.status === 'perawat' ? 'badge-info' : 'badge-neutral'}`}>
                       {item.status}
@@ -1011,6 +1019,16 @@ export default function Admin() {
               <option value="magang">Magang</option>
               <option value="freelance">Freelance</option>
             </select>
+          </div>
+          <div className="form-group" style={{ flex: '1 1 160px' }}>
+            <label className="form-label">Departemen</label>
+            <input
+              type="text"
+              className="form-input"
+              value={newDepartemen}
+              onChange={e => setNewDepartemen(e.target.value)}
+              placeholder="Contoh: IT"
+            />
           </div>
           <div className="form-group" style={{ flex: '1 1 160px' }}>
             <label className="form-label">Role Akun</label>
@@ -1204,7 +1222,7 @@ export default function Admin() {
       <div className="page-header">
         <div>
           <h2 className="text-gradient">Dashboard Admin</h2>
-          <p className="form-label" style={{ marginBottom: 0 }}>Melati Dental Care — Sistem Absensi</p>
+          <p className="form-label" style={{ marginBottom: 0 }}>YP Jabal Rahmah Mulia — Sistem Absensi</p>
         </div>
         <div className="flex items-center gap-2">
           <button 
@@ -1308,6 +1326,16 @@ export default function Admin() {
                   <option value="magang">Magang</option>
                   <option value="freelance">Freelance</option>
                 </select>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Departemen</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={editDepartemen}
+                  onChange={e => setEditDepartemen(e.target.value)}
+                  placeholder="Contoh: IT"
+                />
               </div>
               <div className="form-group">
                 <label className="form-label">Role Akun</label>

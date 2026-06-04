@@ -16,7 +16,7 @@ export default function Login() {
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
-    
+
     // Fetch settings to get the logo
     callApi({ action: 'get_settings' })
       .then(res => {
@@ -42,12 +42,12 @@ export default function Login() {
       });
 
       login(result.user);
-      
+
       // Request fullscreen programmatically on user interaction
       try {
         const elem = document.documentElement;
         if (elem.requestFullscreen) {
-          elem.requestFullscreen().catch(() => {});
+          elem.requestFullscreen().catch(() => { });
         } else if (elem.webkitRequestFullscreen) {
           elem.webkitRequestFullscreen();
         } else if (elem.msRequestFullscreen) {
@@ -56,7 +56,7 @@ export default function Login() {
       } catch (f) {
         // ignore fullscreen blocker
       }
-      
+
       if (result.user.role === 'admin') {
         navigate('/admin');
       } else {
@@ -73,12 +73,12 @@ export default function Login() {
     <div className="login-wrapper">
       <div className="card glass login-card">
         <div className="login-brand">
-          <img 
-            src={logo ? (logo.includes('/d/') ? `https://drive.google.com/thumbnail?id=${logo.split('/d/')[1].split('/')[0]}&sz=w400` : logo) : '/logo2.png'} 
-            alt="Klinik Logo" 
-            style={{ width: '80px', height: '80px', objectFit: 'contain', marginBottom: '1rem', borderRadius: '12px' }} 
+          <img
+            src={logo ? (logo.includes('/d/') ? `https://drive.google.com/thumbnail?id=${logo.split('/d/')[1].split('/')[0]}&sz=w400` : logo) : '/logoJRM.png'}
+            alt="Klinik Logo"
+            style={{ width: '80px', height: '80px', objectFit: 'contain', marginBottom: '1rem', borderRadius: '12px' }}
           />
-          <h2>Melati Dental Care</h2>
+          <h2>YP Jabal Rahmah Mulia</h2>
           <p className="login-tagline">Sistem Absensi Karyawan</p>
           <p className="login-time">
             {currentTime.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
@@ -92,21 +92,21 @@ export default function Login() {
         <form onSubmit={handleSubmit}>
           <div className="form-group">
             <label className="form-label">Nomor WhatsApp</label>
-            <input 
-              type="text" 
-              className="form-input" 
+            <input
+              type="text"
+              className="form-input"
               value={nowa}
               onChange={(e) => setNowa(e.target.value)}
               placeholder="08123456789"
               required
             />
           </div>
-          
+
           <div className="form-group">
             <label className="form-label">Password</label>
-            <input 
-              type="password" 
-              className="form-input" 
+            <input
+              type="password"
+              className="form-input"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
@@ -114,8 +114,8 @@ export default function Login() {
             />
           </div>
 
-          <button 
-            type="submit" 
+          <button
+            type="submit"
             className="btn btn-primary w-full justify-center"
             disabled={isLoading}
           >

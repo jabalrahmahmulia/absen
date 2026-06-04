@@ -689,7 +689,7 @@ export default function Attendance() {
                 <div className="home-profile-left">
                   <label htmlFor="home-avatar-upload" className="avatar-container" style={{ cursor: 'pointer', display: 'block' }} title="Klik untuk ganti foto">
                     <img 
-                      src={avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(user?.nama || '')}&backgroundColor=059669,10b981,047857&fontSize=42&fontFamily=Inter`} 
+                      src={avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(user?.nama || '')}&backgroundColor=f97316,fb923c,ea580c&fontSize=42&fontFamily=Inter`} 
                       alt="Avatar" 
                       className="home-avatar"
                     />
@@ -705,7 +705,7 @@ export default function Attendance() {
                     />
                   </label>
                   <div>
-                    <div style={{ fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'rgba(255, 255, 255, 0.75)', fontWeight: '700', marginBottom: '0.2rem' }}>Melati Dental Care</div>
+                    <div style={{ fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'rgba(255, 255, 255, 0.75)', fontWeight: '700', marginBottom: '0.2rem' }}>YP Jabal Rahmah Mulia</div>
                     <div className="home-greeting">Assalamu'alaikum,</div>
                     <div className="home-user-name">{user?.nama}</div>
                   </div>
@@ -782,10 +782,10 @@ export default function Attendance() {
                     className="home-quick-btn masuk"
                     onClick={() => setActiveTab('absen')}
                     style={{
-                      background: 'linear-gradient(135deg, #059669 0%, #10b981 100%)',
+                      background: 'linear-gradient(135deg, #f97316 0%, #fb923c 100%)',
                       color: 'white',
                       border: 'none',
-                      boxShadow: '0 4px 12px rgba(5, 150, 105, 0.2)'
+                      boxShadow: '0 4px 12px rgba(249, 115, 22, 0.2)'
                     }}
                   >
                     <Clock size={18} />
@@ -1019,7 +1019,7 @@ export default function Attendance() {
                       className="profile-tab-avatar"
                     />
                   ) : (
-                    <div className="profile-tab-avatar" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, #059669 0%, #10b981 100%)', color: 'white' }}>
+                    <div className="profile-tab-avatar" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, #f97316 0%, #fb923c 100%)', color: 'white' }}>
                       <User size={38} />
                     </div>
                   )}
@@ -1212,7 +1212,7 @@ export default function Attendance() {
           <div>
             {/* Professional Sticky Header for Riwayat */}
             <div style={{
-              background: 'linear-gradient(135deg, #059669 0%, #047857 100%)',
+              background: 'linear-gradient(135deg, #f97316 0%, #ea580c 100%)',
               padding: '1.5rem 1.25rem 1.25rem',
               position: 'sticky',
               top: 0,
@@ -1376,7 +1376,7 @@ export default function Attendance() {
           <div>
             {/* Professional Sticky Header for Rekap */}
             <div style={{
-              background: 'linear-gradient(135deg, #0f766e 0%, #134e4a 100%)',
+              background: 'linear-gradient(135deg, #c2410c 0%, #9a3412 100%)',
               padding: '1.5rem 1.25rem 1.25rem',
               position: 'sticky',
               top: 0,
