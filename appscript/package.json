@@ -1,0 +1,16 @@
+{
+    "name": "absenapp",
+    "version": "1.0.0",
+    "description": "",
+    "main": "Kode.js",
+    "scripts": {
+        "go": "clasp push && clasp deploy -i AKfycbxgDfb4yOy5X3Vglc8NXDCdp69HoCyos4mWzMYiI8aIbCfg6i2Mhpx0JiibUIQB-9x_Vg"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "type": "commonjs",
+    "dependencies": {
+        "canvas": "^3.2.3"
+    }
+}

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   Users, FileText, UserPlus, LogOut, ArrowLeft, Settings, Save,
   Clock, Calendar, Filter, Edit3, X, ChevronDown, BarChart3,
-  AlertTriangle, CheckCircle, Timer, MapPin, Upload, Maximize2, Minimize2
+  AlertTriangle, CheckCircle, Timer, MapPin, Upload, Maximize2, Minimize2, RefreshCw
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { callApi } from '../api';
@@ -49,14 +49,20 @@ function dateToKey(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
+function getSelectedSitesLabel(selectedStr) {
+  if (!selectedStr) return 'Pilih Site Absen...';
+  if (selectedStr === 'Semua') return 'Semua Lokasi';
+  return selectedStr;
+}
+
 const INITIAL_SCHEDULE = {
-  1: { active: true, start: '17:00', end: '20:30' },
-  2: { active: true, start: '17:00', end: '20:30' },
-  3: { active: true, start: '17:00', end: '20:30' },
-  4: { active: true, start: '17:00', end: '20:30' },
-  5: { active: true, start: '17:00', end: '20:30' },
-  6: { active: true, start: '10:00', end: '17:00' },
-  0: { active: false, start: '08:00', end: '17:00' }
+  1: { active: true, start: '07:00', end: '17:00' },
+  2: { active: true, start: '07:00', end: '17:00' },
+  3: { active: true, start: '07:00', end: '17:00' },
+  4: { active: true, start: '07:00', end: '17:00' },
+  5: { active: true, start: '07:00', end: '17:00' },
+  6: { active: true, start: '07:00', end: '17:00' },
+  0: { active: false, start: '07:00', end: '17:00' }
 };
 
 export default function Admin() {
@@ -68,8 +74,10 @@ export default function Admin() {
   // Data
   const [users, setUsers] = useState([]);
   const [report, setReport] = useState([]);
-  const [settings, setSettings] = useState({ KLINIK_LAT: '', KLINIK_LNG: '', MAX_DISTANCE: '', KLINIK_LOGO: '' });
+  const [settings, setSettings] = useState({ KLINIK_LAT: '', KLINIK_LNG: '', MAX_DISTANCE: '', KLINIK_LOGO: '', SITES_JSON: '[]' });
   const [logoBase64, setLogoBase64] = useState(null);
+  const [sites, setSites] = useState([]);
+  const [newSite, setNewSite] = useState({ name: '', lat: '', lng: '', radius: '50' });
 
   // Fullscreen state
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -120,8 +128,6 @@ export default function Admin() {
   const [notifTitle, setNotifTitle] = useState('');
   const [notifMessage, setNotifMessage] = useState('');
   const [sendingNotif, setSendingNotif] = useState(false);
-  const [errorMsg, setErrorMsg] = useState('');
-  const [successMsg, setSuccessMsg] = useState('');
 
   // Filters
   const now = new Date();
@@ -139,6 +145,7 @@ export default function Admin() {
   const [newDepartemen, setNewDepartemen] = useState('');
   const [newBatasAwalMasuk, setNewBatasAwalMasuk] = useState(60);
   const [newBatasAkhirPulang, setNewBatasAkhirPulang] = useState(240);
+  const [newLokasiAbsen, setNewLokasiAbsen] = useState('Semua');
   const [addingUser, setAddingUser] = useState(false);
   const [newJadwal, setNewJadwal] = useState(INITIAL_SCHEDULE);
 
@@ -151,42 +158,89 @@ export default function Admin() {
   const [editDepartemen, setEditDepartemen] = useState('');
   const [editBatasAwalMasuk, setEditBatasAwalMasuk] = useState(60);
   const [editBatasAkhirPulang, setEditBatasAkhirPulang] = useState(240);
+  const [editLokasiAbsen, setEditLokasiAbsen] = useState('Semua');
   const [savingUser, setSavingUser] = useState(false);
+  
+  // Custom dropdown and speed states
+  const [refreshing, setRefreshing] = useState(false);
+  const [showSiteDropdown, setShowSiteDropdown] = useState(false);
+  const [showEditSiteDropdown, setShowEditSiteDropdown] = useState(false);
 
-  // ─── Data Fetching ─────────────────────────────────────────
-  const fetchData = async () => {
-    setLoading(true);
-    setErrorMsg('');
-    setSuccessMsg('');
+  // Manual attendance input states
+  const [showManualModal, setShowManualModal] = useState(false);
+  const [manualUserNowa, setManualUserNowa] = useState('');
+  const [manualType, setManualType] = useState('Masuk');
+  const [manualDate, setManualDate] = useState(new Date().toISOString().split('T')[0]);
+  const [manualTime, setManualTime] = useState(new Date().toTimeString().split(' ')[0].substring(0, 5));
+  const [manualKeterangan, setManualKeterangan] = useState('Lupa Absen');
+  const [submittingManual, setSubmittingManual] = useState(false);
+  const [editingSite, setEditingSite] = useState(null);
+  const [popupNotif, setPopupNotif] = useState(null);
+
+  // Click outside listener for custom dropdowns
+  useEffect(() => {
+    const handleOutsideClick = () => {
+      setShowSiteDropdown(false);
+      setShowEditSiteDropdown(false);
+    };
+    document.addEventListener('click', handleOutsideClick);
+    return () => document.removeEventListener('click', handleOutsideClick);
+  }, []);
+
+  // ─── Data Fetching (Optimized with In-Memory Caching) ────────
+  const fetchAllData = async (force = false) => {
+    const isFirstLoad = report.length === 0 && users.length === 0;
+    if (isFirstLoad || force) {
+      if (isFirstLoad) {
+        setLoading(true);
+      } else {
+        setRefreshing(true);
+      }
+    }
     try {
-      if (activeTab === 'report' || activeTab === 'recap') {
-        const [reportRes, usersRes] = await Promise.all([
-          callApi({ action: 'get_report' }),
-          callApi({ action: 'get_users' })
-        ]);
-        setReport(reportRes.report);
-        setUsers(usersRes.users);
-      } else if (activeTab === 'users') {
-        const res = await callApi({ action: 'get_users' });
-        setUsers(res.users);
-      } else if (activeTab === 'settings') {
-        const res = await callApi({ action: 'get_settings' });
-        setSettings({
-          KLINIK_LAT: String(res.settings.KLINIK_LAT || '').replace('_', ''),
-          KLINIK_LNG: String(res.settings.KLINIK_LNG || '').replace('_', ''),
-          MAX_DISTANCE: res.settings.MAX_DISTANCE || '100'
-        });
+      const [reportRes, usersRes, settingsRes] = await Promise.all([
+        callApi({ action: 'get_report' }),
+        callApi({ action: 'get_users' }),
+        callApi({ action: 'get_settings' })
+      ]);
+      
+      setReport(reportRes.report || []);
+      setUsers(usersRes.users || []);
+      
+      if (settingsRes.settings) {
+        const s = {
+          KLINIK_LAT: String(settingsRes.settings.KLINIK_LAT || '').replace('_', ''),
+          KLINIK_LNG: String(settingsRes.settings.KLINIK_LNG || '').replace('_', ''),
+          MAX_DISTANCE: settingsRes.settings.MAX_DISTANCE || '100',
+          KLINIK_LOGO: settingsRes.settings.KLINIK_LOGO || '',
+          SITES_JSON: settingsRes.settings.SITES_JSON || '[]'
+        };
+        setSettings(s);
+        try {
+          const parsedSites = JSON.parse(s.SITES_JSON);
+          if (Array.isArray(parsedSites) && parsedSites.length > 0) {
+            setSites(parsedSites);
+          } else if (s.KLINIK_LAT) {
+            const parseCoord = (val) => parseFloat(String(val || '0').replace('_', '').replace(',', '.'));
+            setSites([{ id: 'legacy', name: 'Site Utama', lat: parseCoord(s.KLINIK_LAT), lng: parseCoord(s.KLINIK_LNG), radius: parseInt(s.MAX_DISTANCE || '100', 10) }]);
+          } else {
+            setSites([]);
+          }
+        } catch(e) {
+          setSites([]);
+        }
       }
     } catch (err) {
-      setErrorMsg(err.message);
+      setPopupNotif({ type: 'error', title: 'Gagal Memuat Data', message: err.message });
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   };
 
   useEffect(() => {
-    fetchData();
-  }, [activeTab]);
+    fetchAllData();
+  }, []);
 
   // ─── Filtered Report Data ──────────────────────────────────
   const filteredReport = useMemo(() => {
@@ -233,7 +287,7 @@ export default function Admin() {
       const d = new Date(item.timestamp);
       const key = `${item.nama}|${dateToKey(d)}`;
       if (!groups[key]) {
-        groups[key] = { nama: item.nama, date: d, masuk: null, keluar: null };
+        groups[key] = { nama: item.nama, date: d, masuk: null, keluar: null, statusAbsen: null };
       }
       if (item.tipe === 'Masuk') {
         // Keep earliest masuk
@@ -246,6 +300,9 @@ export default function Admin() {
         if (!groups[key].keluar || new Date(item.timestamp) > new Date(groups[key].keluar)) {
           groups[key].keluar = item.timestamp;
         }
+      }
+      if (['Sakit', 'Izin', 'Alpa'].includes(item.tipe)) {
+        groups[key].statusAbsen = item.tipe;
       }
     });
 
@@ -304,7 +361,9 @@ export default function Admin() {
         terlambat: false
       };
 
-      if (row.jamMasuk && row.jamKeluar) {
+      if (g.statusAbsen) {
+        row.status = g.statusAbsen;
+      } else if (row.jamMasuk && row.jamKeluar) {
         const diffMs = row.jamKeluar - row.jamMasuk;
         const durasiMinutes = Math.floor(diffMs / 60000);
         row.durasiMinutes = durasiMinutes;
@@ -356,11 +415,17 @@ export default function Admin() {
     const totalJamKerja = recapData.reduce((sum, r) => sum + r.durasiMinutes, 0);
     const totalLembur = recapData.reduce((sum, r) => sum + r.lemburMinutes, 0);
     const hariTerlambat = recapData.filter(r => r.terlambat).length;
+    const totalSakit = recapData.filter(r => r.status === 'Sakit').length;
+    const totalIzin = recapData.filter(r => r.status === 'Izin').length;
+    const totalAlpa = recapData.filter(r => r.status === 'Alpa').length;
     return {
       totalHariKerja,
       totalJamKerja: formatDuration(totalJamKerja),
       totalLembur: formatDuration(totalLembur),
-      hariTerlambat
+      hariTerlambat,
+      totalSakit,
+      totalIzin,
+      totalAlpa
     };
   }, [recapData]);
 
@@ -507,12 +572,9 @@ export default function Admin() {
     );
   };
 
-  // ─── Handlers ──────────────────────────────────────────────
   const handleAddUser = async (e) => {
     e.preventDefault();
     setAddingUser(true);
-    setErrorMsg('');
-    setSuccessMsg('');
     try {
       await callApi({
         action: 'add_user',
@@ -529,6 +591,7 @@ export default function Admin() {
         departemen: newDepartemen,
         batasAwalMasuk: newBatasAwalMasuk,
         batasAkhirPulang: newBatasAkhirPulang,
+        lokasiAbsen: newLokasiAbsen,
         jadwal: newJadwal
       });
       setNewNama('');
@@ -538,13 +601,14 @@ export default function Admin() {
       setNewStatus('pegawai');
       setNewRole('user');
       setNewDepartemen('');
+      setNewLokasiAbsen('Semua');
       setNewBatasAwalMasuk(60);
       setNewBatasAkhirPulang(240);
       setNewJadwal(INITIAL_SCHEDULE);
-      setSuccessMsg('Karyawan berhasil ditambahkan!');
-      fetchData();
+      setPopupNotif({ type: 'success', title: 'Karyawan Ditambahkan', message: 'Karyawan baru berhasil ditambahkan!' });
+      fetchAllData(true);
     } catch (err) {
-      setErrorMsg(err.message);
+      setPopupNotif({ type: 'error', title: 'Gagal Menambah Karyawan', message: err.message });
     } finally {
       setAddingUser(false);
     }
@@ -556,6 +620,7 @@ export default function Admin() {
     setEditStatus(u.status || 'pegawai');
     setEditRole(u.role || 'user');
     setEditDepartemen(u.departemen || '');
+    setEditLokasiAbsen(u.lokasiAbsen || 'Semua');
     setEditBatasAwalMasuk(u.batasAwalMasuk !== undefined ? u.batasAwalMasuk : 60);
     setEditBatasAkhirPulang(u.batasAkhirPulang !== undefined ? u.batasAkhirPulang : 240);
     
@@ -576,15 +641,11 @@ export default function Admin() {
         0: { active: false, start: '08:00', end: '17:00' }
       });
     }
-    
-    setErrorMsg('');
-    setSuccessMsg('');
   };
 
   const handleUpdateUser = async (e) => {
     e.preventDefault();
     setSavingUser(true);
-    setErrorMsg('');
     try {
       await callApi({
         action: 'update_user',
@@ -598,29 +659,93 @@ export default function Admin() {
         status: editStatus,
         role: editRole,
         departemen: editDepartemen,
+        lokasiAbsen: editLokasiAbsen,
         batasAwalMasuk: editBatasAwalMasuk,
         batasAkhirPulang: editBatasAkhirPulang,
         jadwal: editJadwal
       });
       setEditingUser(null);
-      setSuccessMsg('Data karyawan berhasil diperbarui!');
-      fetchData();
+      setPopupNotif({ type: 'success', title: 'Data Diperbarui', message: 'Data karyawan berhasil diperbarui!' });
+      fetchAllData(true);
     } catch (err) {
-      setErrorMsg(err.message);
+      setPopupNotif({ type: 'error', title: 'Gagal Memperbarui Data', message: err.message });
     } finally {
       setSavingUser(false);
     }
   };
 
+  const handleManualAttendanceSubmit = async (e) => {
+    e.preventDefault();
+    if (!manualUserNowa) {
+      setPopupNotif({ type: 'error', title: 'Karyawan Belum Dipilih', message: 'Silakan pilih karyawan terlebih dahulu.' });
+      return;
+    }
+    
+    const selectedUser = users.find(u => String(u.nowa) === String(manualUserNowa));
+    if (!selectedUser) {
+      setPopupNotif({ type: 'error', title: 'Karyawan Tidak Ditemukan', message: 'Karyawan yang dipilih tidak dapat ditemukan di database.' });
+      return;
+    }
+    
+    setSubmittingManual(true);
+    
+    try {
+      const [year, month, day] = manualDate.split('-').map(Number);
+      const [hours, minutes] = manualTime.split(':').map(Number);
+      const datetime = new Date(year, month - 1, day, hours, minutes);
+      
+      await callApi({
+        action: 'attend',
+        nama: selectedUser.nama,
+        nowa: selectedUser.nowa,
+        tipe: manualType,
+        jarak: 0,
+        koordinat: 'Manual',
+        photo: null,
+        keterangan: `Input Manual oleh Admin (${manualKeterangan})`,
+        timestamp: datetime.toISOString()
+      });
+      
+      setPopupNotif({ type: 'success', title: 'Absen Manual Berhasil', message: `Berhasil menambahkan data absen manual untuk ${selectedUser.nama}!` });
+      setShowManualModal(false);
+      setManualUserNowa('');
+      setManualType('Masuk');
+      setManualDate(new Date().toISOString().split('T')[0]);
+      setManualTime(new Date().toTimeString().split(' ')[0].substring(0, 5));
+      setManualKeterangan('Lupa Absen');
+      
+      fetchAllData(true);
+    } catch (err) {
+      setPopupNotif({ type: 'error', title: 'Gagal Menyimpan Absen', message: err.message });
+    } finally {
+      setSubmittingManual(false);
+    }
+  };
+
+  const handleSaveEditSite = (e) => {
+    e.preventDefault();
+    if (!editingSite.name || !editingSite.lat || !editingSite.lng || !editingSite.radius) {
+      setPopupNotif({ type: 'error', title: 'Input Tidak Lengkap', message: 'Mohon lengkapi semua field lokasi absen.' });
+      return;
+    }
+    setSites(sites.map(s => s.id === editingSite.id ? {
+      ...editingSite,
+      lat: parseFloat(String(editingSite.lat).replace(',', '.')),
+      lng: parseFloat(String(editingSite.lng).replace(',', '.')),
+      radius: parseInt(editingSite.radius, 10)
+    } : s));
+    setEditingSite(null);
+  };
+
   const handleSaveSettings = async (e) => {
     e.preventDefault();
     setSavingSettings(true);
-    setErrorMsg('');
-    setSuccessMsg('');
     const sanitizedSettings = {
       ...settings,
-      KLINIK_LAT: '_' + String(settings.KLINIK_LAT).replace(',', '.'),
-      KLINIK_LNG: '_' + String(settings.KLINIK_LNG).replace(',', '.')
+      KLINIK_LAT: '_' + (sites.length > 0 ? String(sites[0].lat).replace(',', '.') : ''),
+      KLINIK_LNG: '_' + (sites.length > 0 ? String(sites[0].lng).replace(',', '.') : ''),
+      MAX_DISTANCE: sites.length > 0 ? sites[0].radius : '100',
+      SITES_JSON: JSON.stringify(sites)
     };
     try {
       await callApi({
@@ -634,9 +759,9 @@ export default function Admin() {
         KLINIK_LAT: sanitizedSettings.KLINIK_LAT.replace('_', ''),
         KLINIK_LNG: sanitizedSettings.KLINIK_LNG.replace('_', '')
       });
-      setSuccessMsg('Pengaturan lokasi berhasil disimpan!');
+      setPopupNotif({ type: 'success', title: 'Pengaturan Disimpan', message: 'Pengaturan lokasi berhasil disimpan!' });
     } catch (err) {
-      setErrorMsg(err.message);
+      setPopupNotif({ type: 'error', title: 'Gagal Menyimpan Pengaturan', message: err.message });
     } finally {
       setSavingSettings(false);
     }
@@ -645,12 +770,10 @@ export default function Admin() {
   const handleSendNotification = async (e) => {
     e.preventDefault();
     if (!notifTitle.trim() || !notifMessage.trim()) {
-      setErrorMsg('Judul dan pesan notifikasi wajib diisi');
+      setPopupNotif({ type: 'error', title: 'Input Tidak Lengkap', message: 'Judul dan pesan notifikasi wajib diisi.' });
       return;
     }
     setSendingNotif(true);
-    setErrorMsg('');
-    setSuccessMsg('');
     try {
       await callApi({
         action: 'send_notification',
@@ -660,9 +783,9 @@ export default function Admin() {
       });
       setNotifTitle('');
       setNotifMessage('');
-      setSuccessMsg('Notifikasi berhasil dikirim ke karyawan!');
+      setPopupNotif({ type: 'success', title: 'Notifikasi Terkirim', message: 'Notifikasi berhasil dikirim ke karyawan!' });
     } catch (err) {
-      setErrorMsg(err.message);
+      setPopupNotif({ type: 'error', title: 'Gagal Mengirim Notifikasi', message: err.message });
     } finally {
       setSendingNotif(false);
     }
@@ -699,7 +822,17 @@ export default function Admin() {
   // ─── Tab: Laporan Absensi ──────────────────────────────────
   const renderReport = () => (
     <div>
-      {renderFilterBar()}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '1.25rem' }}>
+        {renderFilterBar()}
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => setShowManualModal(true)}
+          style={{ padding: '0.65rem 1.25rem', borderRadius: 'var(--radius-md)', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.88rem', fontWeight: 'bold' }}
+        >
+          <Clock size={16} /> + Input Absen Manual
+        </button>
+      </div>
 
       <div className="stat-cards">
         <div className="stat-card">
@@ -793,7 +926,7 @@ export default function Admin() {
     <div>
       {renderFilterBar()}
 
-      <div className="stat-cards">
+      <div className="stat-cards" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))' }}>
         <div className="stat-card">
           <div className="stat-value">{recapStats.totalHariKerja}</div>
           <div className="stat-label">Total Hari Kerja</div>
@@ -809,6 +942,18 @@ export default function Admin() {
         <div className="stat-card">
           <div className="stat-value">{recapStats.hariTerlambat}</div>
           <div className="stat-label">Hari Terlambat</div>
+        </div>
+        <div className="stat-card stat-info">
+          <div className="stat-value">{recapStats.totalSakit}</div>
+          <div className="stat-label">Sakit</div>
+        </div>
+        <div className="stat-card" style={{ borderLeft: '4px solid #8b5cf6' }}>
+          <div className="stat-value">{recapStats.totalIzin}</div>
+          <div className="stat-label">Izin</div>
+        </div>
+        <div className="stat-card stat-error">
+          <div className="stat-value">{recapStats.totalAlpa}</div>
+          <div className="stat-label">Alpa</div>
         </div>
       </div>
 
@@ -865,6 +1010,18 @@ export default function Admin() {
                       <span className="badge badge-success">
                         <CheckCircle size={12} /> {row.status}
                       </span>
+                    ) : row.status === 'Sakit' ? (
+                      <span className="badge badge-info">
+                        🩺 {row.status}
+                      </span>
+                    ) : row.status === 'Izin' ? (
+                      <span className="badge" style={{ background: '#f5f3ff', color: '#7c3aed' }}>
+                        ✉️ {row.status}
+                      </span>
+                    ) : row.status === 'Alpa' ? (
+                      <span className="badge badge-error">
+                        ⚠️ {row.status}
+                      </span>
                     ) : row.status === 'Belum Pulang' ? (
                       <span className="badge badge-warning">
                         <Timer size={12} /> {row.status}
@@ -904,10 +1061,11 @@ export default function Admin() {
           <thead>
             <tr>
               <th>Nama</th>
-              <th>No WA</th>
+              <th>Username (No WA)</th>
               <th>Jam Kerja</th>
               <th>Toleransi</th>
-              <th>Departemen</th>
+              <th>Jabatan</th>
+              <th>Site Absen</th>
               <th>Status</th>
               <th>Role</th>
               <th>Aksi</th>
@@ -916,7 +1074,7 @@ export default function Admin() {
           <tbody>
             {users.length === 0 ? (
               <tr>
-                <td colSpan="7" className="text-center" style={{ padding: '2rem 1rem', color: 'var(--text-muted)' }}>
+                <td colSpan="9" className="text-center" style={{ padding: '2rem 1rem', color: 'var(--text-muted)' }}>
                   Belum ada data karyawan
                 </td>
               </tr>
@@ -930,9 +1088,14 @@ export default function Admin() {
                   </td>
                   <td>{item.toleransi || 15} menit</td>
                   <td>{item.departemen || '-'}</td>
+                  <td>{item.lokasiAbsen || 'Semua'}</td>
                   <td>
-                    <span className={`badge ${item.status === 'perawat' ? 'badge-info' : 'badge-neutral'}`}>
-                      {item.status}
+                    <span className={`badge ${
+                      String(item.status).toLowerCase() === 'pegawai' ? 'badge-info' :
+                      String(item.status).toLowerCase() === 'magang' ? 'badge-warning' :
+                      String(item.status).toLowerCase() === 'freelance' ? 'badge-success' : 'badge-neutral'
+                    }`}>
+                      {item.status ? item.status.charAt(0).toUpperCase() + item.status.slice(1) : '-'}
                     </span>
                   </td>
                   <td>
@@ -959,111 +1122,209 @@ export default function Admin() {
         Tambah Karyawan Baru
       </h3>
       <form onSubmit={handleAddUser}>
-        <div className="flex flex-wrap gap-4">
-          <div className="form-group" style={{ flex: '1 1 200px' }}>
-            <label className="form-label">Nama Lengkap</label>
-            <input
-              type="text"
-              className="form-input"
-              value={newNama}
-              onChange={e => setNewNama(e.target.value)}
-              placeholder="Nama karyawan"
-              required
-            />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '24px', marginBottom: '24px' }}>
+          {/* Card 1: Informasi Akun */}
+          <div style={{ background: 'var(--surface-hover)', padding: '20px', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600, color: 'var(--primary-dark)', borderBottom: '1px solid var(--border)', paddingBottom: '10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Users size={16} /> Informasi Akun Karyawan
+            </h4>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+              <div className="form-group" style={{ marginBottom: 0, gridColumn: 'span 2' }}>
+                <label className="form-label">Nama Lengkap</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={newNama}
+                  onChange={e => setNewNama(e.target.value)}
+                  placeholder="Nama karyawan"
+                  required
+                />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Username (Nomor HP)</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={newNowa}
+                  onChange={e => setNewNowa(e.target.value)}
+                  placeholder="0812..."
+                  required
+                />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Password</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={newPassword}
+                  onChange={e => setNewPassword(e.target.value)}
+                  placeholder="Password login"
+                  required
+                />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Jabatan</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={newDepartemen}
+                  onChange={e => setNewDepartemen(e.target.value)}
+                  placeholder="Contoh: IT"
+                />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Status</label>
+                <select
+                  className="form-input"
+                  value={newStatus}
+                  onChange={e => setNewStatus(e.target.value)}
+                >
+                  <option value="pegawai">Pegawai</option>
+                  <option value="magang">Magang</option>
+                  <option value="freelance">Freelance</option>
+                </select>
+              </div>
+              <div className="form-group" style={{ marginBottom: 0, gridColumn: 'span 2' }}>
+                <label className="form-label">Role Akun</label>
+                <select
+                  className="form-input"
+                  value={newRole}
+                  onChange={e => setNewRole(e.target.value)}
+                >
+                  <option value="user">User Biasa</option>
+                  <option value="user_bebas">User Bebas Lokasi</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </div>
+            </div>
           </div>
-          <div className="form-group" style={{ flex: '1 1 200px' }}>
-            <label className="form-label">No WA (Username)</label>
-            <input
-              type="text"
-              className="form-input"
-              value={newNowa}
-              onChange={e => setNewNowa(e.target.value)}
-              placeholder="0812..."
-              required
-            />
-          </div>
-          <div className="form-group" style={{ flex: '1 1 200px' }}>
-            <label className="form-label">Password</label>
-            <input
-              type="text"
-              className="form-input"
-              value={newPassword}
-              onChange={e => setNewPassword(e.target.value)}
-              placeholder="Password login"
-              required
-            />
-          </div>
-          <div style={{ flex: '1 1 100%', marginTop: '1rem', marginBottom: '0.5rem' }}>
-            <p className="form-label" style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: '0.85rem', marginBottom: '0.5rem' }}>📅 Penjadwalan Kerja Mingguan</p>
-            {renderWeeklySchedule(newJadwal, setNewJadwal)}
-          </div>
-          <div className="form-group" style={{ flex: '1 1 140px' }}>
-            <label className="form-label">Toleransi (menit)</label>
-            <input
-              type="number"
-              className="form-input"
-              value={newToleransi}
-              onChange={e => setNewToleransi(e.target.value)}
-              min="0"
-              required
-            />
-          </div>
-          <div className="form-group" style={{ flex: '1 1 160px' }}>
-            <label className="form-label">Status</label>
-            <select
-              className="form-input"
-              value={newStatus}
-              onChange={e => setNewStatus(e.target.value)}
-            >
-              <option value="pegawai">Pegawai</option>
-              <option value="magang">Magang</option>
-              <option value="freelance">Freelance</option>
-            </select>
-          </div>
-          <div className="form-group" style={{ flex: '1 1 160px' }}>
-            <label className="form-label">Departemen</label>
-            <input
-              type="text"
-              className="form-input"
-              value={newDepartemen}
-              onChange={e => setNewDepartemen(e.target.value)}
-              placeholder="Contoh: IT"
-            />
-          </div>
-          <div className="form-group" style={{ flex: '1 1 160px' }}>
-            <label className="form-label">Role Akun</label>
-            <select
-              className="form-input"
-              value={newRole}
-              onChange={e => setNewRole(e.target.value)}
-            >
-              <option value="user">User Biasa</option>
-              <option value="user_bebas">User Bebas Lokasi</option>
-              <option value="admin">Admin</option>
-            </select>
-          </div>
-          <div className="form-group" style={{ flex: '1 1 180px' }}>
-            <label className="form-label">Batas Awal Masuk (mnt)</label>
-            <input
-              type="number"
-              className="form-input"
-              value={newBatasAwalMasuk}
-              onChange={e => setNewBatasAwalMasuk(Number(e.target.value))}
-              placeholder="60"
-            />
-          </div>
-          <div className="form-group" style={{ flex: '1 1 180px' }}>
-            <label className="form-label">Batas Akhir Pulang (mnt)</label>
-            <input
-              type="number"
-              className="form-input"
-              value={newBatasAkhirPulang}
-              onChange={e => setNewBatasAkhirPulang(Number(e.target.value))}
-              placeholder="240"
-            />
+
+          {/* Card 2: Konfigurasi Absensi */}
+          <div style={{ background: 'var(--surface-hover)', padding: '20px', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600, color: 'var(--primary-dark)', borderBottom: '1px solid var(--border)', paddingBottom: '10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <MapPin size={16} /> Konfigurasi Absensi & Lokasi
+            </h4>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+              <div className="form-group" style={{ marginBottom: 0, gridColumn: 'span 2', position: 'relative' }}>
+                <label className="form-label">Site Absen</label>
+                <div 
+                  className="form-input flex justify-between items-center cursor-pointer" 
+                  onClick={e => { e.stopPropagation(); setShowSiteDropdown(!showSiteDropdown); }}
+                  style={{ minHeight: '42px', paddingRight: '12px' }}
+                >
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '90%' }}>
+                    {getSelectedSitesLabel(newLokasiAbsen)}
+                  </span>
+                  <ChevronDown size={16} style={{ transform: showSiteDropdown ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} />
+                </div>
+                {showSiteDropdown && (
+                  <div className="dropdown-panel glass" onClick={e => e.stopPropagation()} style={{
+                    position: 'absolute',
+                    top: '100%',
+                    left: 0,
+                    right: 0,
+                    zIndex: 50,
+                    background: 'var(--surface)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 'var(--radius-md)',
+                    marginTop: '4px',
+                    padding: '8px',
+                    boxShadow: 'var(--shadow-lg)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '6px',
+                    maxHeight: '200px',
+                    overflowY: 'auto'
+                  }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', borderRadius: '4px', cursor: 'pointer', hover: 'background: var(--surface-hover)', fontSize: '0.875rem' }}>
+                      <input
+                        type="checkbox"
+                        checked={newLokasiAbsen === 'Semua'}
+                        onChange={e => {
+                          if (e.target.checked) {
+                            setNewLokasiAbsen('Semua');
+                          } else {
+                            setNewLokasiAbsen(sites[0] ? sites[0].name : '');
+                          }
+                        }}
+                      />
+                      <span style={{ fontWeight: 600 }}>Semua Lokasi</span>
+                    </label>
+                    <hr style={{ margin: '4px 0', border: 'none', borderTop: '1px solid var(--border)' }} />
+                    {sites.map(s => {
+                      const isSelected = newLokasiAbsen === 'Semua' || newLokasiAbsen.split(',').map(item => item.trim().toLowerCase()).includes(s.name.toLowerCase());
+                      return (
+                        <label key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', borderRadius: '4px', cursor: newLokasiAbsen === 'Semua' ? 'not-allowed' : 'pointer', opacity: newLokasiAbsen === 'Semua' ? 0.6 : 1, fontSize: '0.875rem' }}>
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            disabled={newLokasiAbsen === 'Semua'}
+                            onChange={e => {
+                              const currentSites = newLokasiAbsen.split(',').map(item => item.trim()).filter(Boolean);
+                              let nextSites;
+                              if (e.target.checked) {
+                                nextSites = [...currentSites, s.name];
+                              } else {
+                                nextSites = currentSites.filter(name => name.toLowerCase() !== s.name.toLowerCase());
+                              }
+                              const nextVal = nextSites.join(', ');
+                              setNewLokasiAbsen(nextVal || 'Semua');
+                            }}
+                          />
+                          <span>{s.name}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Toleransi (menit)</label>
+                <input
+                  type="number"
+                  className="form-input"
+                  value={newToleransi}
+                  onChange={e => setNewToleransi(e.target.value)}
+                  min="0"
+                  required
+                />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                {/* empty block to align layout */}
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Batas Awal Masuk (mnt)</label>
+                <input
+                  type="number"
+                  className="form-input"
+                  value={newBatasAwalMasuk}
+                  onChange={e => setNewBatasAwalMasuk(Number(e.target.value))}
+                  placeholder="60"
+                />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Batas Akhir Pulang (mnt)</label>
+                <input
+                  type="number"
+                  className="form-input"
+                  value={newBatasAkhirPulang}
+                  onChange={e => setNewBatasAkhirPulang(Number(e.target.value))}
+                  placeholder="240"
+                />
+              </div>
+            </div>
           </div>
         </div>
-        <button type="submit" className="btn btn-primary mt-4" disabled={addingUser}>
+
+        {/* Card 3: Penjadwalan Mingguan */}
+        <div style={{ background: 'var(--surface-hover)', padding: '20px', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border)', marginBottom: '24px' }}>
+          <h4 style={{ margin: '0 0 16px 0', fontSize: '0.95rem', fontWeight: 600, color: 'var(--primary-dark)', borderBottom: '1px solid var(--border)', paddingBottom: '10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Clock size={16} /> Penjadwalan Kerja Mingguan
+          </h4>
+          {renderWeeklySchedule(newJadwal, setNewJadwal)}
+        </div>
+
+        <button type="submit" className="btn btn-primary" disabled={addingUser} style={{ width: '100%', maxWidth: '240px' }}>
           {addingUser ? (
             <div className="spinner"></div>
           ) : (
@@ -1075,6 +1336,24 @@ export default function Admin() {
   );
 
   // ─── Tab: Pengaturan ───────────────────────────────────────
+  const handleAddSite = () => {
+    if (!newSite.name || !newSite.lat || !newSite.lng || !newSite.radius) {
+      setPopupNotif({ type: 'error', title: 'Input Tidak Lengkap', message: 'Mohon lengkapi semua field lokasi absen.' });
+      return;
+    }
+    setSites([...sites, { ...newSite, id: 'site_' + Date.now() }]);
+    setNewSite({ name: '', lat: '', lng: '', radius: '50' });
+  };
+
+  const handleRemoveSite = (id) => {
+    setPopupNotif({
+      type: 'confirm',
+      title: 'Hapus Lokasi',
+      message: 'Yakin ingin menghapus site ini?',
+      onConfirm: () => setSites(sites.filter(s => s.id !== id))
+    });
+  };
+
   const renderSettings = () => (
     <div>
       <h3 className="mb-2">
@@ -1082,63 +1361,59 @@ export default function Admin() {
         Pengaturan Titik Absensi
       </h3>
       <p className="form-label mb-6">
-        Tentukan koordinat pusat klinik. Karyawan hanya bisa absen jika berada dalam radius jarak yang ditentukan dari titik ini.
+        Daftarkan titik koordinat lokasi absensi (Sites). Karyawan akan diizinkan absen jika berada dalam radius jarak yang ditentukan dari salah satu lokasi yang diizinkan untuk mereka. (Site pertama pada list ini akan menjadi Site Utama).
       </p>
 
       <form onSubmit={handleSaveSettings}>
-        <div className="flex flex-col gap-4 max-w-md">
-          <div className="form-group mb-0">
-            <label className="form-label">Latitude (Garis Lintang)</label>
-            <input
-              type="text"
-              className="form-input"
-              value={settings.KLINIK_LAT}
-              onChange={e => setSettings({ ...settings, KLINIK_LAT: e.target.value })}
-              placeholder="Contoh: 3.5776976"
-              required
-            />
-          </div>
-
-          <div className="form-group mb-0">
-            <label className="form-label">Longitude (Garis Bujur)</label>
-            <input
-              type="text"
-              className="form-input"
-              value={settings.KLINIK_LNG}
-              onChange={e => setSettings({ ...settings, KLINIK_LNG: e.target.value })}
-              placeholder="Contoh: 98.679542"
-              required
-            />
-          </div>
-
-          <div className="form-group mb-4">
-            <label className="form-label">Maksimal Jarak Absen (Meter)</label>
-            <input
-              type="number"
-              className="form-input"
-              value={settings.MAX_DISTANCE}
-              onChange={e => setSettings({ ...settings, MAX_DISTANCE: e.target.value })}
-              placeholder="Contoh: 100"
-              required
-            />
-          </div>
-
-          <div className="form-group mb-0">
-            <label className="form-label">Link URL Logo Klinik</label>
-            <input
-              type="text"
-              className="form-input"
-              value={settings.KLINIK_LOGO || ''}
-              onChange={e => setSettings({ ...settings, KLINIK_LOGO: e.target.value })}
-              placeholder="Contoh: https://i.ibb.co.com/Tp8ZHHp/logo2.png"
-            />
-            {settings.KLINIK_LOGO && (
-              <div style={{marginTop:'0.5rem'}}>
-                <span style={{fontSize:'0.85rem', color:'var(--text-muted)'}}>Pratinjau Logo:</span><br/>
-                <img src={settings.KLINIK_LOGO.includes('/d/') ? `https://drive.google.com/thumbnail?id=${settings.KLINIK_LOGO.split('/d/')[1].split('/')[0]}&sz=w200` : settings.KLINIK_LOGO} alt="Current Logo" style={{maxHeight:'50px', borderRadius:'4px', marginTop:'0.2rem'}} />
+        <div className="flex flex-col gap-4">
+          {sites.map((s, idx) => (
+            <div key={s.id} style={{ padding: '1rem', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', background: 'var(--surface-hover)' }}>
+              <div className="flex justify-between items-center mb-2">
+                <strong>{idx + 1}. {s.name}</strong>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  <button type="button" className="btn btn-sm btn-ghost" style={{ color: 'var(--primary)' }} onClick={() => setEditingSite(s)}>
+                    <Edit3 size={15} />
+                  </button>
+                  <button type="button" className="btn btn-sm btn-ghost" style={{ color: 'var(--error)' }} onClick={() => handleRemoveSite(s.id)}>
+                    <X size={16} />
+                  </button>
+                </div>
               </div>
-            )}
+              <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                Lat: {s.lat}, Lng: {s.lng}, Radius: {s.radius}m
+              </div>
+            </div>
+          ))}
+
+          {/* Form Add New Site */}
+          <div style={{ padding: '1rem', border: '1px dashed var(--primary)', borderRadius: 'var(--radius-lg)' }}>
+            <h4 style={{ marginBottom: '1rem', fontSize: '0.95rem' }}>+ Tambah Lokasi Absen Baru</h4>
+            <div className="flex flex-wrap gap-2 mb-2">
+              <div className="form-group mb-0" style={{ flex: '1 1 120px' }}>
+                <label className="form-label">Nama Lokasi</label>
+                <input type="text" className="form-input" value={newSite.name} onChange={e => setNewSite({...newSite, name: e.target.value})} placeholder="Contoh: Site Ringroad" />
+              </div>
+              <div className="form-group mb-0" style={{ flex: '1 1 100px' }}>
+                <label className="form-label">Radius (Meter)</label>
+                <input type="number" className="form-input" value={newSite.radius} onChange={e => setNewSite({...newSite, radius: e.target.value})} placeholder="50" />
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2 mb-2">
+              <div className="form-group mb-0" style={{ flex: '1 1 120px' }}>
+                <label className="form-label">Latitude</label>
+                <input type="text" className="form-input" value={newSite.lat} onChange={e => setNewSite({...newSite, lat: e.target.value})} placeholder="3.57..." />
+              </div>
+              <div className="form-group mb-0" style={{ flex: '1 1 120px' }}>
+                <label className="form-label">Longitude</label>
+                <input type="text" className="form-input" value={newSite.lng} onChange={e => setNewSite({...newSite, lng: e.target.value})} placeholder="98.67..." />
+              </div>
+            </div>
+            <button type="button" className="btn btn-sm mt-2" style={{ background: 'var(--primary-50)', color: 'var(--primary)' }} onClick={handleAddSite}>
+              Tambah ke Daftar
+            </button>
           </div>
+
+
 
           <button type="submit" className="btn btn-primary mt-2" disabled={savingSettings}>
             {savingSettings ? <div className="spinner spinner-sm"></div> : <Save size={18} />}
@@ -1256,11 +1531,17 @@ export default function Admin() {
             <span>{tab.label}</span>
           </button>
         ))}
+        <button
+          className="tab-btn"
+          onClick={() => fetchAllData(true)}
+          disabled={refreshing}
+          style={{ flex: '0 0 auto', padding: '0.7rem', width: '42px', minWidth: '42px', marginLeft: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          title="Refresh Data"
+        >
+          <RefreshCw size={16} style={{ animation: refreshing ? 'spin 1s linear infinite' : 'none' }} />
+        </button>
       </div>
 
-      {/* Alerts */}
-      {errorMsg && <div className="alert alert-error"><AlertTriangle size={18} /> {errorMsg}</div>}
-      {successMsg && <div className="alert alert-success"><CheckCircle size={18} /> {successMsg}</div>}
 
       {/* Content Card */}
       <div className="card glass">
@@ -1328,7 +1609,7 @@ export default function Admin() {
                 </select>
               </div>
               <div className="form-group">
-                <label className="form-label">Departemen</label>
+                <label className="form-label">Jabatan</label>
                 <input
                   type="text"
                   className="form-input"
@@ -1371,6 +1652,79 @@ export default function Admin() {
                   />
                 </div>
               </div>
+              <div className="form-group" style={{ position: 'relative' }}>
+                <label className="form-label">Site Absen</label>
+                <div 
+                  className="form-input flex justify-between items-center cursor-pointer" 
+                  onClick={e => { e.stopPropagation(); setShowEditSiteDropdown(!showEditSiteDropdown); }}
+                  style={{ minHeight: '42px', paddingRight: '12px' }}
+                >
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '90%' }}>
+                    {getSelectedSitesLabel(editLokasiAbsen)}
+                  </span>
+                  <ChevronDown size={16} style={{ transform: showEditSiteDropdown ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} />
+                </div>
+                {showEditSiteDropdown && (
+                  <div className="dropdown-panel glass" onClick={e => e.stopPropagation()} style={{
+                    position: 'absolute',
+                    top: '100%',
+                    left: 0,
+                    right: 0,
+                    zIndex: 50,
+                    background: 'var(--surface)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 'var(--radius-md)',
+                    marginTop: '4px',
+                    padding: '8px',
+                    boxShadow: 'var(--shadow-lg)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '6px',
+                    maxHeight: '200px',
+                    overflowY: 'auto'
+                  }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', borderRadius: '4px', cursor: 'pointer', hover: 'background: var(--surface-hover)', fontSize: '0.875rem' }}>
+                      <input
+                        type="checkbox"
+                        checked={editLokasiAbsen === 'Semua'}
+                        onChange={e => {
+                          if (e.target.checked) {
+                            setEditLokasiAbsen('Semua');
+                          } else {
+                            setEditLokasiAbsen(sites[0] ? sites[0].name : '');
+                          }
+                        }}
+                      />
+                      <span style={{ fontWeight: 600 }}>Semua Lokasi</span>
+                    </label>
+                    <hr style={{ margin: '4px 0', border: 'none', borderTop: '1px solid var(--border)' }} />
+                    {sites.map(s => {
+                      const isSelected = editLokasiAbsen === 'Semua' || editLokasiAbsen.split(',').map(item => item.trim().toLowerCase()).includes(s.name.toLowerCase());
+                      return (
+                        <label key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', borderRadius: '4px', cursor: editLokasiAbsen === 'Semua' ? 'not-allowed' : 'pointer', opacity: editLokasiAbsen === 'Semua' ? 0.6 : 1, fontSize: '0.875rem' }}>
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            disabled={editLokasiAbsen === 'Semua'}
+                            onChange={e => {
+                              const currentSites = editLokasiAbsen.split(',').map(item => item.trim()).filter(Boolean);
+                              let nextSites;
+                              if (e.target.checked) {
+                                nextSites = [...currentSites, s.name];
+                              } else {
+                                nextSites = currentSites.filter(name => name.toLowerCase() !== s.name.toLowerCase());
+                              }
+                              const nextVal = nextSites.join(', ');
+                              setEditLokasiAbsen(nextVal || 'Semua');
+                            }}
+                          />
+                          <span>{s.name}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
               <div className="flex gap-2 mt-4">
                 <button type="submit" className="btn btn-primary" disabled={savingUser} style={{ flex: 1 }}>
                   {savingUser ? <div className="spinner"></div> : <><Save size={16} /> Simpan</>}
@@ -1385,6 +1739,248 @@ export default function Admin() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Manual Attendance Input Modal */}
+      {showManualModal && (
+        <div className="modal-overlay" onClick={() => setShowManualModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '400px' }}>
+            <div className="flex justify-between items-center mb-4">
+              <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Clock size={18} style={{ color: 'var(--primary)' }} />
+                Input Absen Manual
+              </h3>
+              <button
+                className="edit-btn"
+                onClick={() => setShowManualModal(false)}
+                style={{ padding: '0.4rem' }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <form onSubmit={handleManualAttendanceSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Pilih Karyawan</label>
+                <select
+                  className="form-input"
+                  value={manualUserNowa}
+                  onChange={e => setManualUserNowa(e.target.value)}
+                  required
+                >
+                  <option value="">-- Pilih Karyawan --</option>
+                  {users.filter(u => u.role !== 'admin').map((u, i) => (
+                    <option key={i} value={u.nowa}>{u.nama} ({u.departemen || 'Umum'})</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Tipe Presensi</label>
+                <select
+                  className="form-input"
+                  value={manualType}
+                  onChange={e => setManualType(e.target.value)}
+                  required
+                >
+                  <option value="Masuk">Masuk</option>
+                  <option value="Keluar">Keluar</option>
+                  <option value="Sakit">Sakit</option>
+                  <option value="Izin">Izin</option>
+                  <option value="Alpa">Alpa (Mangkir)</option>
+                </select>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Tanggal</label>
+                  <input
+                    type="date"
+                    className="form-input"
+                    value={manualDate}
+                    onChange={e => setManualDate(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Waktu / Jam</label>
+                  <input
+                    type="time"
+                    className="form-input"
+                    value={manualTime}
+                    onChange={e => setManualTime(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Keterangan / Alasan</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={manualKeterangan}
+                  onChange={e => setManualKeterangan(e.target.value)}
+                  placeholder="Contoh: Lupa Absen / Dinas Luar"
+                  required
+                />
+              </div>
+
+              <div className="flex gap-2 mt-2">
+                <button type="submit" className="btn btn-primary" disabled={submittingManual} style={{ flex: 1 }}>
+                  {submittingManual ? <div className="spinner"></div> : <><Save size={16} /> Simpan Absen</>}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setShowManualModal(false)}
+                  style={{ flex: 1 }}
+                >
+                  <X size={16} /> Batal
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Site Modal */}
+      {editingSite && (
+        <div className="modal-overlay" onClick={() => setEditingSite(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '400px' }}>
+            <div className="flex justify-between items-center mb-4">
+              <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <MapPin size={18} style={{ color: 'var(--primary)' }} />
+                Edit Lokasi Absen
+              </h3>
+              <button className="edit-btn" onClick={() => setEditingSite(null)} style={{ padding: '0.4rem' }}>
+                <X size={16} />
+              </button>
+            </div>
+            
+            <form onSubmit={handleSaveEditSite} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Nama Lokasi</label>
+                <input 
+                  type="text" 
+                  className="form-input" 
+                  value={editingSite.name} 
+                  onChange={e => setEditingSite({ ...editingSite, name: e.target.value })} 
+                  required 
+                />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Radius (Meter)</label>
+                <input 
+                  type="number" 
+                  className="form-input" 
+                  value={editingSite.radius} 
+                  onChange={e => setEditingSite({ ...editingSite, radius: e.target.value })} 
+                  required 
+                />
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Latitude</label>
+                  <input 
+                    type="text" 
+                    className="form-input" 
+                    value={editingSite.lat} 
+                    onChange={e => setEditingSite({ ...editingSite, lat: e.target.value })} 
+                    required 
+                  />
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Longitude</label>
+                  <input 
+                    type="text" 
+                    className="form-input" 
+                    value={editingSite.lng} 
+                    onChange={e => setEditingSite({ ...editingSite, lng: e.target.value })} 
+                    required 
+                  />
+                </div>
+              </div>
+              
+              <div className="flex gap-2 mt-2">
+                <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>
+                  <Save size={16} /> Simpan Perubahan
+                </button>
+                <button type="button" className="btn btn-secondary" onClick={() => setEditingSite(null)} style={{ flex: 1 }}>
+                  <X size={16} /> Batal
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Custom Popup Notification & Confirmation Modal */}
+      {popupNotif && (
+        <div className="modal-overlay" style={{ zIndex: 9999 }} onClick={() => {
+          if (popupNotif.type !== 'confirm') {
+            setPopupNotif(null);
+          }
+        }}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '380px', borderRadius: 'var(--radius-xl)', padding: '1.75rem', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
+            <div style={{
+              width: '64px',
+              height: '64px',
+              borderRadius: '50%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: popupNotif.type === 'success' ? 'var(--success-bg)' : popupNotif.type === 'error' ? 'var(--error-bg)' : 'var(--primary-50)',
+              color: popupNotif.type === 'success' ? 'var(--success)' : popupNotif.type === 'error' ? 'var(--error)' : 'var(--primary)',
+              marginBottom: '4px'
+            }}>
+              {popupNotif.type === 'success' ? <CheckCircle size={36} /> : <AlertTriangle size={36} />}
+            </div>
+            
+            <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+              {popupNotif.title}
+            </h3>
+            
+            <p style={{ margin: 0, fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              {popupNotif.message}
+            </p>
+            
+            <div style={{ display: 'flex', gap: '10px', width: '100%', marginTop: '8px' }}>
+              {popupNotif.type === 'confirm' ? (
+                <>
+                  <button 
+                    type="button" 
+                    className="btn btn-danger" 
+                    onClick={() => {
+                      if (popupNotif.onConfirm) popupNotif.onConfirm();
+                      setPopupNotif(null);
+                    }}
+                    style={{ flex: 1, padding: '0.65rem 1rem', borderRadius: 'var(--radius-md)', fontWeight: 600 }}
+                  >
+                    Ya, Hapus
+                  </button>
+                  <button 
+                    type="button" 
+                    className="btn btn-secondary" 
+                    onClick={() => setPopupNotif(null)}
+                    style={{ flex: 1, padding: '0.65rem 1rem', borderRadius: 'var(--radius-md)', fontWeight: 600 }}
+                  >
+                    Batal
+                  </button>
+                </>
+              ) : (
+                <button 
+                  type="button" 
+                  className="btn btn-primary" 
+                  onClick={() => setPopupNotif(null)}
+                  style={{ width: '100%', padding: '0.65rem 1rem', borderRadius: 'var(--radius-md)', fontWeight: 600 }}
+                >
+                  Tutup
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}

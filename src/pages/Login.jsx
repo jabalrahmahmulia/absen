@@ -10,22 +10,11 @@ export default function Login() {
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
-  const [logo, setLogo] = useState(null);
   const { login } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
-
-    // Fetch settings to get the logo
-    callApi({ action: 'get_settings' })
-      .then(res => {
-        if (res.settings && res.settings.KLINIK_LOGO) {
-          setLogo(res.settings.KLINIK_LOGO);
-        }
-      })
-      .catch(console.error);
-
     return () => clearInterval(timer);
   }, []);
 
@@ -74,7 +63,7 @@ export default function Login() {
       <div className="card glass login-card">
         <div className="login-brand">
           <img
-            src={logo ? (logo.includes('/d/') ? `https://drive.google.com/thumbnail?id=${logo.split('/d/')[1].split('/')[0]}&sz=w400` : logo) : '/logoJRM.png'}
+            src="logoJRM.png"
             alt="Klinik Logo"
             style={{ width: '80px', height: '80px', objectFit: 'contain', marginBottom: '1rem', borderRadius: '12px' }}
           />

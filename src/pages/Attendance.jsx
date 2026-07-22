@@ -7,19 +7,19 @@ import { callApi } from '../api';
 
 // Haversine formula
 function getDistanceFromLatLonInM(lat1, lon1, lat2, lon2) {
-  const R = 6371000; 
+  const R = 6371000;
   const dLat = deg2rad(lat2 - lat1);
-  const dLon = deg2rad(lon2 - lon1); 
-  const a = 
-    Math.sin(dLat/2) * Math.sin(dLat/2) +
-    Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) * 
-    Math.sin(dLon/2) * Math.sin(dLon/2); 
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
+  const dLon = deg2rad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return Math.round(R * c);
 }
 
 function deg2rad(deg) {
-  return deg * (Math.PI/180);
+  return deg * (Math.PI / 180);
 }
 
 function formatJamKerja(val, defaultVal) {
@@ -31,32 +31,72 @@ function formatJamKerja(val, defaultVal) {
       // Koreksi offset historis LMT Indonesia (+07:07:12 -> +07:00:00) yang sering terjadi di Google Sheets
       d.setMinutes(d.getMinutes() + 7);
       d.setSeconds(d.getSeconds() + 12);
-      return d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
-    } catch(e) {
+      return d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }).replace(/\./g, ':');
+    } catch (e) {
       return s;
     }
   }
   return s;
 }
 
+const compressImage = (base64Str, maxWidth = 640, maxHeight = 640, quality = 0.6) => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let width = img.width;
+      let height = img.height;
+
+      if (width > height) {
+        if (width > maxWidth) {
+          height *= maxWidth / width;
+          width = maxWidth;
+        }
+      } else {
+        if (height > maxHeight) {
+          width *= maxHeight / height;
+          height = maxHeight;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => {
+      resolve(base64Str); // Fallback to original if load fails
+    };
+    img.src = base64Str;
+  });
+};
+
 export default function Attendance() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const webcamRef = useRef(null);
-  
+  const watcherRef = useRef(null);
+  const [locAccuracy, setLocAccuracy] = useState(null);
+
   // Settings from API
   const [clinicConfig, setClinicConfig] = useState(null);
+  const [sites, setSites] = useState([]);
   const [fetchingSettings, setFetchingSettings] = useState(true);
 
   // States
   const [location, setLocation] = useState(null);
   const [distance, setDistance] = useState(null);
+  const [activeSiteName, setActiveSiteName] = useState('');
+  const [activeMaxDist, setActiveMaxDist] = useState(100);
   const [locError, setLocError] = useState('');
   const [loading, setLoading] = useState(false);
   const [successMsg, setSuccessMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [popupNotif, setPopupNotif] = useState(null);
   const [currentTime, setCurrentTime] = useState(new Date());
   const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [latenessInfo, setLatenessInfo] = useState(null);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
 
   // History states
@@ -88,7 +128,7 @@ export default function Attendance() {
           const MAX_HEIGHT = 120;
           let width = img.width;
           let height = img.height;
-          
+
           if (width > height) {
             if (width > MAX_WIDTH) {
               height *= MAX_WIDTH / width;
@@ -104,7 +144,7 @@ export default function Attendance() {
           canvas.height = height;
           const ctx = canvas.getContext('2d');
           ctx.drawImage(img, 0, 0, width, height);
-          
+
           const compressedBase64 = canvas.toDataURL('image/jpeg', 0.75);
           setAvatarUrl(compressedBase64);
           localStorage.setItem(`user_avatar_${user.nowa}`, compressedBase64);
@@ -118,7 +158,7 @@ export default function Attendance() {
   // Helper to parse time string
   const parseTimeStr = (ts) => {
     if (!ts) return null;
-    const [h, m] = String(ts).split(':').map(Number);
+    const [h, m] = String(ts).replace(/\./g, ':').split(':').map(Number);
     return { h: h || 0, m: m || 0, totalMinutes: (h || 0) * 60 + (m || 0) };
   };
 
@@ -134,7 +174,7 @@ export default function Attendance() {
   // Get daily recaps list
   const getDailyRecapsList = useCallback(() => {
     if (!history || history.length === 0) return [];
-    
+
     const HARI = ['Ahad', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
     const groups = {};
 
@@ -142,7 +182,7 @@ export default function Attendance() {
       const d = new Date(item.timestamp);
       const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
       if (!groups[key]) {
-        groups[key] = { date: d, masuk: null, keluar: null, keterangan: '' };
+        groups[key] = { date: d, masuk: null, keluar: null, statusAbsen: null, keterangan: '' };
       }
       if (item.tipe === 'Masuk') {
         if (!groups[key].masuk || new Date(item.timestamp) < new Date(groups[key].masuk)) {
@@ -153,6 +193,9 @@ export default function Attendance() {
         if (!groups[key].keluar || new Date(item.timestamp) > new Date(groups[key].keluar)) {
           groups[key].keluar = item.timestamp;
         }
+      }
+      if (['Sakit', 'Izin', 'Alpa'].includes(item.tipe)) {
+        groups[key].statusAbsen = item.tipe;
       }
       if (item.keterangan) {
         groups[key].keterangan = item.keterangan;
@@ -215,7 +258,9 @@ export default function Attendance() {
         terlambat: false
       };
 
-      if (row.jamMasuk && row.jamKeluar) {
+      if (g.statusAbsen) {
+        row.status = g.statusAbsen;
+      } else if (row.jamMasuk && row.jamKeluar) {
         const diffMs = row.jamKeluar - row.jamMasuk;
         const durasiMinutes = Math.floor(diffMs / 60000);
         row.durasi = formatDuration(durasiMinutes);
@@ -246,6 +291,8 @@ export default function Attendance() {
         }
       } else if (row.jamMasuk) {
         row.status = 'Belum Pulang';
+      } else {
+        row.status = !isActive ? 'Hari Libur' : 'Tidak Hadir';
       }
 
       rows.push(row);
@@ -309,15 +356,15 @@ export default function Attendance() {
 
         if (!isActive) continue;
 
-        const [schH, schM] = jamSelesaiStr.split(':').map(Number);
+        const [schH, schM] = String(jamSelesaiStr).replace(/\./g, ':').split(':').map(Number);
         const shiftEnd = new Date(g.date);
         shiftEnd.setHours(schH || 20, schM || 30, 0, 0);
 
         const now = new Date();
         const isPastShiftEnd = now > shiftEnd;
-        const isPastDate = (now.getDate() !== g.date.getDate()) || 
-                           (now.getMonth() !== g.date.getMonth()) || 
-                           (now.getFullYear() !== g.date.getFullYear());
+        const isPastDate = (now.getDate() !== g.date.getDate()) ||
+          (now.getMonth() !== g.date.getMonth()) ||
+          (now.getFullYear() !== g.date.getFullYear());
 
         if (isPastDate || isPastShiftEnd) {
           return {
@@ -337,7 +384,7 @@ export default function Attendance() {
 
   // Camera state
   const [takingPhotoFor, setTakingPhotoFor] = useState(null); // 'Masuk' | 'Keluar' | null
-  
+
   // Fullscreen state
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -360,7 +407,7 @@ export default function Attendance() {
       if (!isFullscreen) {
         const elem = document.documentElement;
         if (elem.requestFullscreen) {
-          elem.requestFullscreen().catch(() => {});
+          elem.requestFullscreen().catch(() => { });
         } else if (elem.webkitRequestFullscreen) {
           elem.webkitRequestFullscreen();
         } else if (elem.msRequestFullscreen) {
@@ -368,18 +415,18 @@ export default function Attendance() {
         }
       } else {
         if (document.exitFullscreen) {
-          document.exitFullscreen().catch(() => {});
+          document.exitFullscreen().catch(() => { });
         } else if (document.webkitExitFullscreen) {
           document.webkitExitFullscreen();
         } else if (document.msExitFullscreen) {
           document.msExitFullscreen();
         }
       }
-    } catch(e) {
+    } catch (e) {
       console.error(e);
     }
   };
-  
+
   // Notification states
   const [notifications, setNotifications] = useState([]);
   const [unreadNotifCount, setUnreadNotifCount] = useState(0);
@@ -404,13 +451,13 @@ export default function Attendance() {
       });
       if (res.notifications) {
         setNotifications(res.notifications);
-        
+
         const lastViewed = localStorage.getItem(`melati_notif_last_viewed_${user.nowa}`) || '0';
         const lastViewedTime = new Date(lastViewed).getTime();
-        
+
         let unread = 0;
         let latestNotif = null;
-        
+
         res.notifications.forEach(n => {
           const notifTime = new Date(n.timestamp).getTime();
           if (notifTime > lastViewedTime) {
@@ -420,25 +467,25 @@ export default function Attendance() {
             }
           }
         });
-        
+
         setUnreadNotifCount(unread);
-        
+
         if (!isInitial && latestNotif && unread > 0) {
           setActiveToastNotif(latestNotif);
-          
+
           if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
             new Notification(latestNotif.title, {
               body: latestNotif.message,
               icon: '/logo2.png'
             });
           }
-          
+
           setTimeout(() => {
             setActiveToastNotif(prev => (prev && prev.timestamp === latestNotif.timestamp ? null : prev));
           }, 6000);
         }
       }
-    } catch(e) {
+    } catch (e) {
       console.error('Failed to fetch notifications:', e);
     }
   }, [user]);
@@ -459,11 +506,11 @@ export default function Attendance() {
     localStorage.setItem(`melati_notif_last_viewed_${user.nowa}`, nowStr);
     setUnreadNotifCount(0);
   };
-  
+
   const now = new Date();
   const [filterMonth, setFilterMonth] = useState(now.getMonth());
   const [filterYear, setFilterYear] = useState(now.getFullYear());
-  
+
   const MONTHS = [
     'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
     'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
@@ -483,11 +530,26 @@ export default function Attendance() {
         const res = await callApi({ action: 'get_settings' });
         const parseCoord = (val) => parseFloat(String(val || '0').replace('_', '').replace(',', '.'));
         setClinicConfig({
-          lat: parseCoord(res.settings.KLINIK_LAT),
-          lng: parseCoord(res.settings.KLINIK_LNG),
-          max_dist: parseInt(res.settings.MAX_DISTANCE || '100', 10),
           logo: res.settings.KLINIK_LOGO || null
         });
+
+        let loadedSites = [];
+        try {
+          if (res.settings.SITES_JSON) {
+            loadedSites = JSON.parse(res.settings.SITES_JSON);
+          }
+        } catch (e) { }
+
+        if (!loadedSites || loadedSites.length === 0) {
+          loadedSites = [{
+            id: 'legacy',
+            name: 'Site Utama',
+            lat: parseCoord(res.settings.KLINIK_LAT),
+            lng: parseCoord(res.settings.KLINIK_LNG),
+            radius: parseInt(res.settings.MAX_DISTANCE || '100', 10)
+          }];
+        }
+        setSites(loadedSites);
       } catch (err) {
         setLocError('Gagal mengambil pengaturan koordinat dari server. Hubungi Admin.');
       } finally {
@@ -498,39 +560,119 @@ export default function Attendance() {
   }, []);
 
   // 2. Get user location when activeTab changes to 'absen' or clinicConfig loads
-  const getLocation = useCallback(() => {
-    if (!clinicConfig) return;
-    
+  const startWatchingLocation = useCallback(() => {
+    if (sites.length === 0) return;
+
+    // Clear previous watcher if exists
+    if (watcherRef.current !== null) {
+      navigator.geolocation.clearWatch(watcherRef.current);
+      watcherRef.current = null;
+    }
+
     setLocError('');
     setLocation(null);
     setDistance(null);
+    setLocAccuracy(null);
+    setActiveSiteName('');
 
     if (!navigator.geolocation) {
       setLocError('Geolocation tidak didukung di browser ini.');
       return;
     }
 
-    navigator.geolocation.getCurrentPosition(
+    let bestLocation = null;
+    let bestDistance = null;
+    let bestSiteName = '';
+    let bestMaxDist = 100;
+    let bestAccuracy = Infinity;
+
+    watcherRef.current = navigator.geolocation.watchPosition(
       (position) => {
         const lat = position.coords.latitude;
         const lng = position.coords.longitude;
-        setLocation({ lat, lng });
-        
-        const dist = getDistanceFromLatLonInM(clinicConfig.lat, clinicConfig.lng, lat, lng);
-        setDistance(dist);
+        const accuracy = position.coords.accuracy;
+
+        // Keep the reading with the best accuracy
+        if (accuracy < bestAccuracy || bestLocation === null) {
+          bestLocation = { lat, lng };
+          bestAccuracy = accuracy;
+
+          let allowedSites = sites;
+          if (user.lokasiAbsen && user.lokasiAbsen.toLowerCase() !== 'semua') {
+            const allowedNames = user.lokasiAbsen.split(',').map(s => s.trim().toLowerCase());
+            allowedSites = sites.filter(s => allowedNames.includes(s.name.toLowerCase()));
+          }
+          if (allowedSites.length === 0) {
+            allowedSites = sites;
+          }
+
+          let validSite = null;
+          let minDistance = Infinity;
+          let minSite = null;
+
+          for (const s of allowedSites) {
+            const d = getDistanceFromLatLonInM(s.lat, s.lng, lat, lng);
+            if (d <= s.radius) {
+              validSite = s;
+              minDistance = d;
+              break;
+            }
+            if (d < minDistance) {
+              minDistance = d;
+              minSite = s;
+            }
+          }
+
+          if (validSite) {
+            bestDistance = Math.round(minDistance);
+            bestSiteName = validSite.name;
+            bestMaxDist = validSite.radius;
+          } else if (minSite) {
+            bestDistance = Math.round(minDistance);
+            bestSiteName = minSite.name;
+            bestMaxDist = minSite.radius;
+          }
+
+          setLocation({ lat, lng });
+          setLocAccuracy(Math.round(accuracy));
+          setDistance(bestDistance);
+          setActiveSiteName(bestSiteName);
+          setActiveMaxDist(bestMaxDist);
+        }
       },
       (err) => {
-        setLocError('Gagal mendapatkan lokasi. Pastikan GPS aktif dan diizinkan.');
+        if (bestLocation === null) {
+          setLocError('Gagal mendapatkan lokasi. Pastikan GPS aktif dan diizinkan.');
+        }
       },
-      { enableHighAccuracy: true }
+      {
+        enableHighAccuracy: true,
+        timeout: 20000,
+        maximumAge: 0
+      }
     );
-  }, [clinicConfig]);
+  }, [sites, user.lokasiAbsen]);
 
+  // Clean up watcher on unmount
   useEffect(() => {
-    if (activeTab === 'absen' && clinicConfig) {
-      getLocation();
+    return () => {
+      if (watcherRef.current !== null) {
+        navigator.geolocation.clearWatch(watcherRef.current);
+      }
+    };
+  }, []);
+
+  // Trigger watching when activeTab is 'absen'
+  useEffect(() => {
+    if (activeTab === 'absen' && sites.length > 0) {
+      startWatchingLocation();
+    } else {
+      if (watcherRef.current !== null) {
+        navigator.geolocation.clearWatch(watcherRef.current);
+        watcherRef.current = null;
+      }
     }
-  }, [activeTab, clinicConfig, getLocation]);
+  }, [activeTab, sites, startWatchingLocation]);
 
   const fetchHistory = useCallback(async () => {
     setLoadingHistory(true);
@@ -560,13 +702,40 @@ export default function Attendance() {
 
   const captureAndSubmit = async () => {
     if (!webcamRef.current) return;
-    const imageSrc = webcamRef.current.getScreenshot();
-    
+
     setErrorMsg('');
     setSuccessMsg('');
+
+    const imageSrc = webcamRef.current.getScreenshot();
+    if (!imageSrc) {
+      setPopupNotif({ type: 'error', title: 'Kamera Belum Siap', message: 'Gagal mengambil foto. Silakan tunggu hingga gambar kamera muncul di layar.' });
+      return;
+    }
+
     setLoading(true);
-    
+
     try {
+      const compressedImage = await compressImage(imageSrc, 640, 640, 0.6);
+
+      // Calculate lateness if checking in
+      let lateInfo = null;
+      if (takingPhotoFor === 'Masuk') {
+        const { jm, isActive } = getJamKerja();
+        if (isActive && jm) {
+          const [schH, schM] = String(jm).replace(/\./g, ':').split(':').map(Number);
+          const now = new Date();
+          const checkMins = now.getHours() * 60 + now.getMinutes();
+          const schMins = schH * 60 + schM;
+          if (checkMins > schMins) {
+            lateInfo = {
+              lateMinutes: checkMins - schMins,
+              jamMasuk: jm
+            };
+          }
+        }
+      }
+      setLatenessInfo(lateInfo);
+
       await callApi({
         action: 'attend',
         nama: user.nama,
@@ -574,16 +743,16 @@ export default function Attendance() {
         tipe: takingPhotoFor,
         jarak: distance,
         koordinat: `${location.lat},${location.lng}`,
-        photo: imageSrc
+        photo: compressedImage
       });
-      
+
       setSuccessMsg(`Berhasil melakukan absen ${takingPhotoFor}!`);
       setTakingPhotoFor(null);
       setShowSuccessModal(true);
       fetchHistory();
     } catch (err) {
-      setErrorMsg(err.message);
-      // Let the user retry or close
+      setTakingPhotoFor(null);
+      setPopupNotif({ type: 'error', title: 'Absen Gagal', message: err.message });
     } finally {
       setLoading(false);
     }
@@ -611,7 +780,7 @@ export default function Attendance() {
   });
 
   const isBebasLokasi = user?.role === 'admin' || user?.role === 'user_bebas';
-  const isLocationValid = isBebasLokasi || (location && distance !== null && distance <= clinicConfig?.max_dist);
+  const isLocationValid = isBebasLokasi || (location && distance !== null && distance <= activeMaxDist);
 
   const getJamKerja = () => {
     const dayOfWeek = currentTime.getDay();
@@ -623,7 +792,7 @@ export default function Attendance() {
         return { jm: '', js: '', isActive: false };
       }
     }
-    
+
     // Fallback to legacy
     const isSabtu = dayOfWeek === 6;
     const isMinggu = dayOfWeek === 0;
@@ -641,9 +810,9 @@ export default function Attendance() {
       return { allowedMasuk: false, allowedKeluar: false, isOffDay: true };
     }
     const currentMins = currentTime.getHours() * 60 + currentTime.getMinutes();
-    
+
     const parseTimeStr = (ts) => {
-      const [h, m] = String(ts).split(':').map(Number);
+      const [h, m] = String(ts).replace(/\./g, ':').split(':').map(Number);
       return (h || 0) * 60 + (m || 0);
     };
 
@@ -678,8 +847,6 @@ export default function Attendance() {
     <>
 
       <div className="main-content" style={{ paddingBottom: '90px' }}>
-        {errorMsg && !takingPhotoFor && <div className="alert alert-error mb-4" style={{ margin: '1rem 1.25rem 0' }}>{errorMsg}</div>}
-        {successMsg && !takingPhotoFor && <div className="alert alert-success mb-4" style={{ margin: '1rem 1.25rem 0' }}><CheckCircle size={18} /> {successMsg}</div>}
 
         {activeTab === 'home' ? (
           <div>
@@ -688,47 +855,64 @@ export default function Attendance() {
               <div className="home-profile-section">
                 <div className="home-profile-left">
                   <label htmlFor="home-avatar-upload" className="avatar-container" style={{ cursor: 'pointer', display: 'block' }} title="Klik untuk ganti foto">
-                    <img 
-                      src={avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(user?.nama || '')}&backgroundColor=f97316,fb923c,ea580c&fontSize=42&fontFamily=Inter`} 
-                      alt="Avatar" 
-                      className="home-avatar"
-                    />
+                    {avatarUrl ? (
+                      <img
+                        src={avatarUrl}
+                        alt="Avatar"
+                        className="home-avatar"
+                      />
+                    ) : (
+                      <div className="home-avatar" style={{ 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        justifyContent: 'center', 
+                        background: 'rgba(255, 255, 255, 0.25)', 
+                        color: 'white',
+                        width: '52px',
+                        height: '52px',
+                        borderRadius: '50%',
+                        border: '2px solid white',
+                        boxShadow: 'var(--shadow-md)'
+                      }}>
+                        <User size={26} />
+                      </div>
+                    )}
                     <div className="avatar-edit-badge">
                       <Camera size={10} />
                     </div>
-                    <input 
-                      id="home-avatar-upload" 
-                      type="file" 
-                      accept="image/*" 
-                      onChange={handleAvatarChange} 
-                      style={{ display: 'none' }} 
+                    <input
+                      id="home-avatar-upload"
+                      type="file"
+                      accept="image/*"
+                      onChange={handleAvatarChange}
+                      style={{ display: 'none' }}
                     />
                   </label>
                   <div>
-                    <div style={{ fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'rgba(255, 255, 255, 0.75)', fontWeight: '700', marginBottom: '0.2rem' }}>YP Jabal Rahmah Mulia</div>
+                    <div style={{ fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'rgba(255, 255, 255, 0.75)', fontWeight: '700', marginBottom: '0.2rem' }}>JRM School</div>
                     <div className="home-greeting">Assalamu'alaikum,</div>
                     <div className="home-user-name">{user?.nama}</div>
                   </div>
                 </div>
                 <div className="home-profile-right" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <button 
-                    className="home-bell-btn sm-hidden" 
-                    onClick={toggleFullscreen} 
+                  <button
+                    className="home-bell-btn sm-hidden"
+                    onClick={toggleFullscreen}
                     title={isFullscreen ? "Keluar Layar Penuh" : "Layar Penuh"}
                   >
                     {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
                   </button>
                   {user?.role === 'admin' && (
-                    <button 
-                      className="home-bell-btn" 
-                      onClick={() => navigate('/admin')} 
+                    <button
+                      className="home-bell-btn"
+                      onClick={() => navigate('/admin')}
                       title="Dashboard Admin"
                     >
                       <BarChart3 size={20} />
                     </button>
                   )}
-                  <button 
-                    className="home-bell-btn" 
+                  <button
+                    className="home-bell-btn"
                     onClick={() => {
                       markNotificationsAsRead();
                       setShowNotifModal(true);
@@ -752,33 +936,19 @@ export default function Attendance() {
                   <div className="home-date-label">
                     {currentTime.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}
                   </div>
-                  
+
                   <div className="home-type-label">
-                    {hasAbsenMasukToday ? 'Presensi Pulang' : 'Presensi Masuk'}
+                    {hasAbsenMasukToday ? (hasAbsenKeluarToday ? 'Presensi Selesai' : 'Presensi Pulang') : 'Presensi Masuk'}
                   </div>
                   <div className="home-time-label">
-                    {(() => {
-                      const todayAbsenMasuk = history.find(h => {
-                        const d = new Date(h.timestamp);
-                        const today = new Date();
-                        return d.getDate() === today.getDate() &&
-                               d.getMonth() === today.getMonth() &&
-                               d.getFullYear() === today.getFullYear() &&
-                               h.tipe === 'Masuk';
-                      });
-                      if (todayAbsenMasuk) {
-                        const checkTime = new Date(todayAbsenMasuk.timestamp);
-                        return checkTime.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }).replace('.', ':');
-                      }
-                      return getJamKerja().jm;
-                    })()}
+                    {hasAbsenMasukToday ? getJamKerja().js : getJamKerja().jm}
                   </div>
                 </div>
-                
+
                 <div className="home-presensi-divider"></div>
-                
+
                 <div className="home-presensi-right">
-                  <button 
+                  <button
                     className="home-quick-btn masuk"
                     onClick={() => setActiveTab('absen')}
                     style={{
@@ -793,31 +963,42 @@ export default function Attendance() {
                   </button>
                 </div>
               </div>
-              
+
               <div className="home-status-footer">
                 {(() => {
                   const todayAbsenMasuk = history.find(h => {
                     const d = new Date(h.timestamp);
                     const today = new Date();
                     return d.getDate() === today.getDate() &&
-                           d.getMonth() === today.getMonth() &&
-                           d.getFullYear() === today.getFullYear() &&
-                           h.tipe === 'Masuk';
+                      d.getMonth() === today.getMonth() &&
+                      d.getFullYear() === today.getFullYear() &&
+                      h.tipe === 'Masuk';
                   });
+                  const todayAbsenKeluar = history.find(h => {
+                    const d = new Date(h.timestamp);
+                    const today = new Date();
+                    return d.getDate() === today.getDate() &&
+                      d.getMonth() === today.getMonth() &&
+                      d.getFullYear() === today.getFullYear() &&
+                      h.tipe === 'Keluar';
+                  });
+                  if (todayAbsenMasuk && todayAbsenKeluar) {
+                    return "Presensi hari ini telah lengkap.";
+                  }
                   if (todayAbsenMasuk) {
                     const now = new Date();
                     const checkTime = new Date(todayAbsenMasuk.timestamp);
                     const diffMs = now - checkTime;
                     const diffHrs = Math.floor(diffMs / (1000 * 60 * 60));
                     const diffMins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-                    
+
                     let durationStr = '';
                     if (diffHrs > 0) durationStr += `${diffHrs} jam `;
                     durationStr += `${diffMins} menit`;
-                    
+
                     return `Presensi masuk dilakukan ${durationStr} yang lalu`;
                   }
-                  
+
                   return "Belum melakukan presensi masuk hari ini.";
                 })()}
               </div>
@@ -828,10 +1009,10 @@ export default function Attendance() {
               const unfinished = getUnfinishedSession();
               if (unfinished) {
                 return (
-                  <div 
-                    style={{ 
-                      margin: '0 1.25rem 1.25rem 1.25rem', 
-                      background: 'linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%)', 
+                  <div
+                    style={{
+                      margin: '0 1.25rem 1.25rem 1.25rem',
+                      background: 'linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%)',
                       border: '1px solid #f59e0b',
                       borderRadius: '1.25rem',
                       padding: '1rem 1.25rem',
@@ -854,7 +1035,7 @@ export default function Attendance() {
                     </div>
 
                     <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '0.25rem' }}>
-                      <button 
+                      <button
                         onClick={() => setUnfinishedModalSession(unfinished)}
                         disabled={loading}
                         style={{
@@ -888,8 +1069,8 @@ export default function Attendance() {
                   <History size={16} style={{ color: 'var(--primary)' }} />
                   Rekap Jam Kerja Terakhir
                 </h3>
-                <button 
-                  onClick={() => setActiveTab('riwayat')} 
+                <button
+                  onClick={() => setActiveTab('riwayat')}
                   style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: '0.75rem', fontWeight: '700', cursor: 'pointer' }}
                 >
                   Lihat Semua
@@ -903,12 +1084,12 @@ export default function Attendance() {
                   </div>
                 ) : (
                   getDailyRecapsList().slice(0, 5).map((recap, idx) => (
-                    <div 
-                      key={idx} 
-                      style={{ 
-                        background: 'white', 
-                        borderRadius: '1.25rem', 
-                        padding: '1rem 1.25rem', 
+                    <div
+                      key={idx}
+                      style={{
+                        background: 'white',
+                        borderRadius: '1.25rem',
+                        padding: '1rem 1.25rem',
                         border: '1px solid var(--border)',
                         boxShadow: '0 4px 15px rgba(0, 0, 0, 0.01)',
                         display: 'flex',
@@ -927,19 +1108,19 @@ export default function Attendance() {
                             Jadwal: {recap.jadwalMulai} - {recap.jadwalSelesai}
                           </div>
                         </div>
-                        
+
                         {/* Status Badge */}
-                        <span style={{ 
-                          fontSize: '0.68rem', 
-                          fontWeight: '700', 
-                          padding: '0.2rem 0.5rem', 
+                        <span style={{
+                          fontSize: '0.68rem',
+                          fontWeight: '700',
+                          padding: '0.2rem 0.5rem',
                           borderRadius: '0.5rem',
-                          background: recap.status === 'Tepat Waktu' ? 'rgba(16, 185, 129, 0.1)' : 
-                                      recap.status.includes('Terlambat') ? 'rgba(245, 158, 11, 0.1)' : 
-                                      recap.status === 'Belum Pulang' ? 'rgba(59, 130, 246, 0.1)' : 'rgba(107, 114, 128, 0.1)',
-                          color: recap.status === 'Tepat Waktu' ? 'var(--success)' : 
-                                 recap.status.includes('Terlambat') ? '#d97706' : 
-                                 recap.status === 'Belum Pulang' ? 'var(--info)' : 'var(--text-muted)'
+                          background: recap.status === 'Tepat Waktu' ? 'rgba(16, 185, 129, 0.1)' :
+                            recap.status.includes('Terlambat') ? 'rgba(245, 158, 11, 0.1)' :
+                              recap.status === 'Belum Pulang' ? 'rgba(59, 130, 246, 0.1)' : 'rgba(107, 114, 128, 0.1)',
+                          color: recap.status === 'Tepat Waktu' ? 'var(--success)' :
+                            recap.status.includes('Terlambat') ? '#d97706' :
+                              recap.status === 'Belum Pulang' ? 'var(--info)' : 'var(--text-muted)'
                         }}>
                           {recap.status}
                         </span>
@@ -970,12 +1151,12 @@ export default function Attendance() {
                       {(recap.lembur || recap.pulangCepat) && (
                         <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.1rem', flexWrap: 'wrap' }}>
                           {recap.lembur && (
-                            <span style={{ 
-                              fontSize: '0.68rem', 
-                              fontWeight: '700', 
-                              padding: '0.2rem 0.5rem', 
-                              borderRadius: '0.5rem', 
-                              background: 'rgba(59, 130, 246, 0.1)', 
+                            <span style={{
+                              fontSize: '0.68rem',
+                              fontWeight: '700',
+                              padding: '0.2rem 0.5rem',
+                              borderRadius: '0.5rem',
+                              background: 'rgba(59, 130, 246, 0.1)',
                               color: 'var(--info)',
                               display: 'inline-flex',
                               alignItems: 'center',
@@ -985,12 +1166,12 @@ export default function Attendance() {
                             </span>
                           )}
                           {recap.pulangCepat && (
-                            <span style={{ 
-                              fontSize: '0.68rem', 
-                              fontWeight: '700', 
-                              padding: '0.2rem 0.5rem', 
-                              borderRadius: '0.5rem', 
-                              background: 'rgba(239, 68, 68, 0.08)', 
+                            <span style={{
+                              fontSize: '0.68rem',
+                              fontWeight: '700',
+                              padding: '0.2rem 0.5rem',
+                              borderRadius: '0.5rem',
+                              background: 'rgba(239, 68, 68, 0.08)',
                               color: 'var(--error)',
                               display: 'inline-flex',
                               alignItems: 'center',
@@ -1013,9 +1194,9 @@ export default function Attendance() {
               <div className="profile-tab-header">
                 <label htmlFor="profile-avatar-upload" className="avatar-container" style={{ cursor: 'pointer', display: 'block' }} title="Klik untuk ganti foto">
                   {avatarUrl ? (
-                    <img 
-                      src={avatarUrl} 
-                      alt="Avatar" 
+                    <img
+                      src={avatarUrl}
+                      alt="Avatar"
                       className="profile-tab-avatar"
                     />
                   ) : (
@@ -1026,33 +1207,37 @@ export default function Attendance() {
                   <div className="avatar-edit-badge profile">
                     <Camera size={12} />
                   </div>
-                  <input 
-                    id="profile-avatar-upload" 
-                    type="file" 
-                    accept="image/*" 
-                    onChange={handleAvatarChange} 
-                    style={{ display: 'none' }} 
+                  <input
+                    id="profile-avatar-upload"
+                    type="file"
+                    accept="image/*"
+                    onChange={handleAvatarChange}
+                    style={{ display: 'none' }}
                   />
                 </label>
                 <div className="profile-tab-name">{user?.nama}</div>
                 <span className="profile-tab-role">{user?.role}</span>
               </div>
-              
+
               <div className="profile-tab-info-row">
                 <span className="profile-tab-info-label">WhatsApp</span>
-                <span className="profile-tab-info-value">{user?.nowa ? user.nowa.replace(/^(?:\+62|62)/, '0') : ''}</span>
+                <span className="profile-tab-info-value">{user?.nowa ? String(user.nowa).replace(/^(?:\+62|62)/, '0') : ''}</span>
               </div>
-              <div className="profile-tab-info-row" style={{ borderBottom: 'none' }}>
+              <div className="profile-tab-info-row">
                 <span className="profile-tab-info-label">Status</span>
                 <span className="profile-tab-info-value" style={{ color: 'var(--primary)' }}>
-                  AKTIF
+                  {user?.status ? String(user.status).toUpperCase() : 'PEGAWAI'}
                 </span>
               </div>
+              <div className="profile-tab-info-row" style={{ borderBottom: 'none' }}>
+                <span className="profile-tab-info-label">Jabatan</span>
+                <span className="profile-tab-info-value">{user?.departemen || '-'}</span>
+              </div>
             </div>
-            
+
             <div className="profile-tab-card" style={{ marginTop: '1rem', marginBottom: '1.5rem', padding: '0.5rem 1rem' }}>
-              <div 
-                className="profile-tab-info-row" 
+              <div
+                className="profile-tab-info-row"
                 style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 0' }}
                 onClick={() => setShowScheduleModal(true)}
               >
@@ -1064,9 +1249,9 @@ export default function Attendance() {
                 </div>
                 <ChevronRight size={18} style={{ color: 'var(--text-muted)' }} />
               </div>
-              
-              <div 
-                className="profile-tab-info-row" 
+
+              <div
+                className="profile-tab-info-row"
                 style={{ borderBottom: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 0' }}
                 onClick={() => setUnderDevFeature({
                   title: "Reset Password",
@@ -1083,8 +1268,8 @@ export default function Attendance() {
               </div>
             </div>
 
-            <button 
-              className="btn btn-danger w-full justify-center" 
+            <button
+              className="btn btn-danger w-full justify-center"
               onClick={handleLogout}
               style={{ padding: '0.9rem', borderRadius: '1rem', border: 'none', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '1rem', fontWeight: 'bold' }}
             >
@@ -1112,7 +1297,7 @@ export default function Attendance() {
                   </div>
                   <h3 style={{ color: 'var(--error)', marginBottom: '0.5rem' }}>Lokasi Tidak Valid</h3>
                   <p style={{ color: 'var(--text-muted)', fontSize: '0.95rem' }}>{locError}</p>
-                  <button className="btn btn-secondary mt-4 mx-auto" onClick={getLocation}><RefreshCw size={16} /> Muat Ulang Lokasi</button>
+                  <button className="btn btn-secondary mt-4 mx-auto" onClick={startWatchingLocation}><RefreshCw size={16} /> Muat Ulang Lokasi</button>
                 </>
               ) : distance === null ? (
                 <div style={{ padding: '2rem 0' }}>
@@ -1128,14 +1313,19 @@ export default function Attendance() {
                   <p style={{ color: 'var(--text-muted)', fontSize: '0.95rem', marginBottom: '1rem' }}>
                     Anda berada dalam radius kantor ({distance}m).
                   </p>
-                  <div style={{ 
-                    fontSize: '0.95rem', 
-                    fontWeight: '600', 
-                    color: isOffDay ? 'var(--text-muted)' : 'var(--primary)', 
-                    background: isOffDay ? 'var(--surface-hover)' : 'rgba(5, 150, 105, 0.1)', 
-                    padding: '0.75rem', 
-                    borderRadius: '0.5rem', 
-                    display: 'inline-block' 
+                  {locAccuracy !== null && (
+                    <div style={{ fontSize: '0.78rem', color: locAccuracy > 50 ? 'var(--error)' : 'var(--text-muted)', marginTop: '-0.5rem', marginBottom: '0.85rem', fontWeight: '650' }}>
+                      📍 Akurasi GPS: ±{locAccuracy} meter {locAccuracy > 50 ? '(Kurang Akurat - Harap Tunggu/Cari Sinyal Terbuka)' : ''}
+                    </div>
+                  )}
+                  <div style={{
+                    fontSize: '0.95rem',
+                    fontWeight: '600',
+                    color: isOffDay ? 'var(--text-muted)' : 'var(--primary)',
+                    background: isOffDay ? 'var(--surface-hover)' : 'rgba(5, 150, 105, 0.1)',
+                    padding: '0.75rem',
+                    borderRadius: '0.5rem',
+                    display: 'inline-block'
                   }}>
                     {(() => {
                       const { jm, js, isActive } = getJamKerja();
@@ -1146,7 +1336,7 @@ export default function Attendance() {
                     })()}
                   </div>
                   <div className="mt-4">
-                    <button className="btn btn-ghost mx-auto btn-sm" style={{ color: 'var(--text-muted)' }} onClick={getLocation}><RefreshCw size={14} /> Muat Ulang Lokasi</button>
+                    <button className="btn btn-ghost mx-auto btn-sm" style={{ color: 'var(--text-muted)' }} onClick={startWatchingLocation}><RefreshCw size={14} /> Muat Ulang Lokasi</button>
                   </div>
                 </>
               ) : (
@@ -1156,19 +1346,24 @@ export default function Attendance() {
                   </div>
                   <h3 style={{ color: 'var(--error)', fontSize: '1.3rem', marginBottom: '0.5rem' }}>Di Luar Jangkauan</h3>
                   <p style={{ color: 'var(--text-muted)', fontSize: '0.95rem', marginBottom: '1rem' }}>
-                    Anda berada {distance}m dari klinik. Maksimal jarak adalah {clinicConfig?.max_dist || 100}m.
+                    Anda berada {distance}m dari {activeSiteName || 'lokasi yang diizinkan'}. Maksimal jarak adalah {activeMaxDist}m.
                   </p>
-                  <button className="btn btn-secondary mt-4 mx-auto btn-sm" onClick={getLocation}><RefreshCw size={14} /> Coba Lagi</button>
+                  {locAccuracy !== null && (
+                    <div style={{ fontSize: '0.78rem', color: locAccuracy > 50 ? 'var(--error)' : 'var(--text-muted)', marginTop: '-0.5rem', marginBottom: '0.85rem', fontWeight: '650' }}>
+                      📍 Akurasi GPS: ±{locAccuracy} meter {locAccuracy > 50 ? '(Kurang Akurat - Harap Tunggu/Cari Sinyal Terbuka)' : ''}
+                    </div>
+                  )}
+                  <button className="btn btn-secondary mt-4 mx-auto btn-sm" onClick={startWatchingLocation}><RefreshCw size={14} /> Coba Lagi</button>
                 </>
               )}
             </div>
 
             {/* Action Buttons */}
             <div className="flex gap-4 mb-4">
-              <button 
+              <button
                 className={`btn flex-1 justify-center flex-col gap-2 ${!hasAbsenMasukToday && allowedMasuk ? 'pulse-mandatory' : ''}`}
-                style={{ 
-                  background: 'linear-gradient(135deg, #34d399 0%, #10b981 100%)', 
+                style={{
+                  background: 'linear-gradient(135deg, #34d399 0%, #10b981 100%)',
                   color: 'white', padding: '1.5rem', borderRadius: '1rem', border: 'none',
                   opacity: disableMasuk ? 0.5 : 1,
                   boxShadow: '0 10px 25px -5px rgba(16, 185, 129, 0.4)',
@@ -1184,12 +1379,12 @@ export default function Attendance() {
                   {hasAbsenMasukToday ? 'Sudah Masuk' : (!allowedMasuk ? 'Di Luar Jam' : 'Absen Masuk (Wajib)')}
                 </span>
               </button>
-              
+
               {allowedKeluar && (
-                <button 
-                  className="btn flex-1 justify-center flex-col gap-2" 
-                  style={{ 
-                    background: 'linear-gradient(135deg, #fb923c 0%, #f97316 100%)', 
+                <button
+                  className="btn flex-1 justify-center flex-col gap-2"
+                  style={{
+                    background: 'linear-gradient(135deg, #fb923c 0%, #f97316 100%)',
                     color: 'white', padding: '1.5rem', borderRadius: '1rem', border: 'none',
                     opacity: disablePulang ? 0.5 : 1,
                     boxShadow: '0 10px 25px -5px rgba(249, 115, 22, 0.4)',
@@ -1226,13 +1421,13 @@ export default function Attendance() {
                     {filteredHistory.length} catatan &middot; {MONTHS[filterMonth]} {filterYear}
                   </p>
                 </div>
-                <div style={{ 
-                  background: 'rgba(255,255,255,0.15)', 
-                  borderRadius: '50%', 
-                  width: '44px', 
-                  height: '44px', 
-                  display: 'flex', 
-                  alignItems: 'center', 
+                <div style={{
+                  background: 'rgba(255,255,255,0.15)',
+                  borderRadius: '50%',
+                  width: '44px',
+                  height: '44px',
+                  display: 'flex',
+                  alignItems: 'center',
                   justifyContent: 'center',
                   flexShrink: 0
                 }}>
@@ -1244,8 +1439,8 @@ export default function Attendance() {
               <div style={{ overflowX: 'auto', paddingBottom: '2px' }}>
                 <div style={{ display: 'flex', gap: '0.45rem', width: 'max-content' }}>
                   {MONTHS.map((m, i) => (
-                    <button 
-                      key={i} 
+                    <button
+                      key={i}
                       onClick={() => setFilterMonth(i)}
                       style={{
                         padding: '0.35rem 0.9rem',
@@ -1271,8 +1466,8 @@ export default function Attendance() {
               {/* Year toggle pills */}
               <div style={{ display: 'flex', gap: '0.45rem', marginTop: '0.6rem' }}>
                 {yearOptions.map(y => (
-                  <button 
-                    key={y} 
+                  <button
+                    key={y}
                     onClick={() => setFilterYear(y)}
                     style={{
                       padding: '0.3rem 0.85rem',
@@ -1311,12 +1506,12 @@ export default function Attendance() {
                     const d = new Date(item.timestamp);
                     const isMasuk = item.tipe === 'Masuk';
                     return (
-                      <div 
-                        key={idx} 
-                        style={{ 
-                          background: 'white', 
-                          borderRadius: '1.25rem', 
-                          padding: '1rem', 
+                      <div
+                        key={idx}
+                        style={{
+                          background: 'white',
+                          borderRadius: '1.25rem',
+                          padding: '1rem',
                           boxShadow: '0 2px 10px rgba(0, 0, 0, 0.04)',
                           border: `1px solid ${isMasuk ? 'rgba(16,185,129,0.12)' : 'rgba(249,115,22,0.12)'}`,
                           display: 'flex',
@@ -1326,14 +1521,14 @@ export default function Attendance() {
                         }}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
-                          <div style={{ 
-                            width: '42px', 
-                            height: '42px', 
-                            borderRadius: '50%', 
-                            background: isMasuk ? 'rgba(16, 185, 129, 0.1)' : 'rgba(249, 115, 22, 0.1)', 
-                            color: isMasuk ? 'var(--success)' : '#f97316', 
-                            display: 'flex', 
-                            alignItems: 'center', 
+                          <div style={{
+                            width: '42px',
+                            height: '42px',
+                            borderRadius: '50%',
+                            background: isMasuk ? 'rgba(16, 185, 129, 0.1)' : 'rgba(249, 115, 22, 0.1)',
+                            color: isMasuk ? 'var(--success)' : '#f97316',
+                            display: 'flex',
+                            alignItems: 'center',
                             justifyContent: 'center',
                             flexShrink: 0
                           }}>
@@ -1390,13 +1585,13 @@ export default function Attendance() {
                     {getDailyRecapsList().filter(r => new Date(r.date).getMonth() === filterMonth && new Date(r.date).getFullYear() === filterYear).length} hari &middot; {MONTHS[filterMonth]} {filterYear}
                   </p>
                 </div>
-                <div style={{ 
-                  background: 'rgba(255,255,255,0.15)', 
-                  borderRadius: '50%', 
-                  width: '44px', 
-                  height: '44px', 
-                  display: 'flex', 
-                  alignItems: 'center', 
+                <div style={{
+                  background: 'rgba(255,255,255,0.15)',
+                  borderRadius: '50%',
+                  width: '44px',
+                  height: '44px',
+                  display: 'flex',
+                  alignItems: 'center',
                   justifyContent: 'center',
                   flexShrink: 0
                 }}>
@@ -1408,8 +1603,8 @@ export default function Attendance() {
               <div style={{ overflowX: 'auto', paddingBottom: '2px' }}>
                 <div style={{ display: 'flex', gap: '0.45rem', width: 'max-content' }}>
                   {MONTHS.map((m, i) => (
-                    <button 
-                      key={i} 
+                    <button
+                      key={i}
                       onClick={() => setFilterMonth(i)}
                       style={{
                         padding: '0.35rem 0.9rem',
@@ -1433,8 +1628,8 @@ export default function Attendance() {
               </div>
               <div style={{ display: 'flex', gap: '0.45rem', marginTop: '0.6rem' }}>
                 {yearOptions.map(y => (
-                  <button 
-                    key={y} 
+                  <button
+                    key={y}
                     onClick={() => setFilterYear(y)}
                     style={{
                       padding: '0.3rem 0.85rem',
@@ -1462,90 +1657,131 @@ export default function Attendance() {
                   <div className="spinner spinner-primary"></div>
                 </div>
               ) : (() => {
-                const rekapFiltered = getDailyRecapsList().filter(r => 
+                const rekapFiltered = getDailyRecapsList().filter(r =>
                   new Date(r.date).getMonth() === filterMonth && new Date(r.date).getFullYear() === filterYear
                 );
-                return rekapFiltered.length === 0 ? (
-                  <div className="card text-center" style={{ padding: '3rem 1.5rem' }}>
-                    <BarChart3 size={48} style={{ margin: '0 auto 1rem', opacity: 0.3, color: 'var(--primary)' }} />
-                    <h3 style={{ color: 'var(--text-primary)', fontSize: '1.1rem', marginBottom: '0.25rem' }}>Tidak Ada Rekap</h3>
-                    <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Belum ada rekap jam kerja untuk {MONTHS[filterMonth]} {filterYear}.</p>
-                  </div>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-                    {rekapFiltered.map((recap, idx) => (
-                      <div 
-                        key={idx} 
-                        style={{ 
-                          background: 'white', 
-                          borderRadius: '1.25rem', 
-                          padding: '1rem 1.25rem', 
-                          border: '1px solid var(--border)',
-                          boxShadow: '0 2px 10px rgba(0, 0, 0, 0.03)',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '0.75rem'
-                        }}
-                      >
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <div>
-                            <span style={{ fontWeight: '800', fontSize: '0.88rem', color: 'var(--text-primary)' }}>
-                              {recap.hari}, {recap.date.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}
-                            </span>
-                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '0.15rem', fontWeight: '500' }}>
-                              <Calendar size={11} style={{ color: 'var(--primary)' }} />
-                              Jadwal: {recap.jadwalMulai} - {recap.jadwalSelesai}
-                            </div>
-                          </div>
-                          <span style={{ 
-                            fontSize: '0.68rem', 
-                            fontWeight: '700', 
-                            padding: '0.2rem 0.55rem', 
-                            borderRadius: '0.5rem',
-                            background: recap.status === 'Tepat Waktu' ? 'rgba(16, 185, 129, 0.1)' : 
-                                        recap.status.includes('Terlambat') ? 'rgba(245, 158, 11, 0.1)' : 
-                                        recap.status === 'Belum Pulang' ? 'rgba(59, 130, 246, 0.1)' : 'rgba(107, 114, 128, 0.1)',
-                            color: recap.status === 'Tepat Waktu' ? 'var(--success)' : 
-                                   recap.status.includes('Terlambat') ? '#d97706' : 
-                                   recap.status === 'Belum Pulang' ? '#3b82f6' : 'var(--text-muted)'
-                          }}>
-                            {recap.status}
-                          </span>
-                        </div>
-                        <div style={{ height: '1px', background: 'var(--border)', opacity: 0.5 }}></div>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem', textAlign: 'center' }}>
-                          <div>
-                            <div style={{ fontSize: '0.63rem', color: 'var(--text-muted)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Masuk</div>
-                            <div style={{ fontSize: '0.9rem', fontWeight: '800', color: 'var(--text-primary)', marginTop: '0.2rem' }}>{recap.jamMasukStr}</div>
-                          </div>
-                          <div>
-                            <div style={{ fontSize: '0.63rem', color: 'var(--text-muted)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Keluar</div>
-                            <div style={{ fontSize: '0.9rem', fontWeight: '800', color: recap.keterangan?.includes('tidak') ? '#f97316' : 'var(--text-primary)', marginTop: '0.2rem' }}>
-                              {recap.jamKeluarStr}
-                              {recap.keterangan && <div style={{ fontSize: '0.6rem', color: '#f97316', fontWeight: '600', marginTop: '0.1rem', lineHeight: '1.2' }}>{recap.keterangan}</div>}
-                            </div>
-                          </div>
-                          <div>
-                            <div style={{ fontSize: '0.63rem', color: 'var(--text-muted)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Jam Kerja</div>
-                            <div style={{ fontSize: '0.9rem', fontWeight: '800', color: 'var(--primary)', marginTop: '0.2rem' }}>{recap.durasi || '-'}</div>
-                          </div>
-                        </div>
-                        {(recap.lembur || recap.pulangCepat) && (
-                          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                            {recap.lembur && (
-                              <span style={{ fontSize: '0.68rem', fontWeight: '700', padding: '0.2rem 0.5rem', borderRadius: '0.5rem', background: 'rgba(59,130,246,0.1)', color: '#3b82f6', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                                ⚡ Lembur: {recap.lembur}
-                              </span>
-                            )}
-                            {recap.pulangCepat && (
-                              <span style={{ fontSize: '0.68rem', fontWeight: '700', padding: '0.2rem 0.5rem', borderRadius: '0.5rem', background: 'rgba(239,68,68,0.08)', color: 'var(--error)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                                ⚠️ Pulang Cepat: {recap.pulangCepat}
-                              </span>
-                            )}
-                          </div>
-                        )}
+
+                const totalHadir = rekapFiltered.filter(r => r.jamMasuk).length;
+                const totalSakit = rekapFiltered.filter(r => r.status === 'Sakit').length;
+                const totalIzin = rekapFiltered.filter(r => r.status === 'Izin').length;
+                const totalAlpa = rekapFiltered.filter(r => r.status === 'Alpa' || r.status === 'Tidak Hadir').length;
+                const totalTerlambat = rekapFiltered.filter(r => r.terlambat).length;
+
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                    {/* Summary Cards */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '6px', marginBottom: '4px' }}>
+                      <div style={{ background: 'white', border: '1px solid var(--border)', borderRadius: '0.75rem', padding: '0.45rem 0.25rem', textAlign: 'center', boxShadow: '0 2px 6px rgba(0,0,0,0.02)' }}>
+                        <div style={{ fontSize: '0.95rem', fontWeight: '800', color: 'var(--success)' }}>{totalHadir}</div>
+                        <div style={{ fontSize: '0.58rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.02em' }}>Hadir</div>
                       </div>
-                    ))}
+                      <div style={{ background: 'white', border: '1px solid var(--border)', borderRadius: '0.75rem', padding: '0.45rem 0.25rem', textAlign: 'center', boxShadow: '0 2px 6px rgba(0,0,0,0.02)' }}>
+                        <div style={{ fontSize: '0.95rem', fontWeight: '800', color: '#ea580c' }}>{totalTerlambat}</div>
+                        <div style={{ fontSize: '0.58rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.02em' }}>Telat</div>
+                      </div>
+                      <div style={{ background: 'white', border: '1px solid var(--border)', borderRadius: '0.75rem', padding: '0.45rem 0.25rem', textAlign: 'center', boxShadow: '0 2px 6px rgba(0,0,0,0.02)' }}>
+                        <div style={{ fontSize: '0.95rem', fontWeight: '800', color: '#0284c7' }}>{totalSakit}</div>
+                        <div style={{ fontSize: '0.58rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.02em' }}>Sakit</div>
+                      </div>
+                      <div style={{ background: 'white', border: '1px solid var(--border)', borderRadius: '0.75rem', padding: '0.45rem 0.25rem', textAlign: 'center', boxShadow: '0 2px 6px rgba(0,0,0,0.02)' }}>
+                        <div style={{ fontSize: '0.95rem', fontWeight: '800', color: '#7c3aed' }}>{totalIzin}</div>
+                        <div style={{ fontSize: '0.58rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.02em' }}>Izin</div>
+                      </div>
+                      <div style={{ background: 'white', border: '1px solid var(--border)', borderRadius: '0.75rem', padding: '0.45rem 0.25rem', textAlign: 'center', boxShadow: '0 2px 6px rgba(0,0,0,0.02)' }}>
+                        <div style={{ fontSize: '0.95rem', fontWeight: '800', color: 'var(--error)' }}>{totalAlpa}</div>
+                        <div style={{ fontSize: '0.58rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.02em' }}>Alpa</div>
+                      </div>
+                    </div>
+
+                    {rekapFiltered.length === 0 ? (
+                      <div className="card text-center" style={{ padding: '3rem 1.5rem' }}>
+                        <BarChart3 size={48} style={{ margin: '0 auto 1rem', opacity: 0.3, color: 'var(--primary)' }} />
+                        <h3 style={{ color: 'var(--text-primary)', fontSize: '1.1rem', marginBottom: '0.25rem' }}>Tidak Ada Rekap</h3>
+                        <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Belum ada rekap jam kerja untuk {MONTHS[filterMonth]} {filterYear}.</p>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                        {rekapFiltered.map((recap, idx) => (
+                          <div
+                            key={idx}
+                            style={{
+                              background: 'white',
+                              borderRadius: '1.25rem',
+                              padding: '1rem 1.25rem',
+                              border: '1px solid var(--border)',
+                              boxShadow: '0 2px 10px rgba(0, 0, 0, 0.03)',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '0.75rem'
+                            }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <div>
+                                <span style={{ fontWeight: '800', fontSize: '0.88rem', color: 'var(--text-primary)' }}>
+                                  {recap.hari}, {recap.date.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}
+                                </span>
+                                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '0.15rem', fontWeight: '500' }}>
+                                  <Calendar size={11} style={{ color: 'var(--primary)' }} />
+                                  Jadwal: {recap.jadwalMulai} - {recap.jadwalSelesai}
+                                </div>
+                              </div>
+                              <span style={{
+                                fontSize: '0.68rem',
+                                fontWeight: '700',
+                                padding: '0.2rem 0.55rem',
+                                borderRadius: '0.5rem',
+                                background: recap.status === 'Tepat Waktu' ? 'rgba(16, 185, 129, 0.1)' :
+                                  recap.status.includes('Terlambat') ? 'rgba(245, 158, 11, 0.1)' :
+                                    recap.status === 'Belum Pulang' ? 'rgba(59, 130, 246, 0.1)' :
+                                      recap.status === 'Sakit' ? 'rgba(2, 132, 199, 0.1)' :
+                                        recap.status === 'Izin' ? 'rgba(124, 58, 237, 0.1)' :
+                                          recap.status === 'Alpa' || recap.status === 'Tidak Hadir' ? 'rgba(239, 68, 68, 0.1)' : 'rgba(107, 114, 128, 0.1)',
+                                color: recap.status === 'Tepat Waktu' ? 'var(--success)' :
+                                  recap.status.includes('Terlambat') ? '#d97706' :
+                                    recap.status === 'Belum Pulang' ? '#3b82f6' :
+                                      recap.status === 'Sakit' ? '#0284c7' :
+                                        recap.status === 'Izin' ? '#7c3aed' :
+                                          recap.status === 'Alpa' || recap.status === 'Tidak Hadir' ? 'var(--error)' : 'var(--text-muted)'
+                              }}>
+                                {recap.status}
+                              </span>
+                            </div>
+                            <div style={{ height: '1px', background: 'var(--border)', opacity: 0.5 }}></div>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem', textAlign: 'center' }}>
+                              <div>
+                                <div style={{ fontSize: '0.63rem', color: 'var(--text-muted)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Masuk</div>
+                                <div style={{ fontSize: '0.9rem', fontWeight: '800', color: 'var(--text-primary)', marginTop: '0.2rem' }}>{recap.jamMasukStr}</div>
+                              </div>
+                              <div>
+                                <div style={{ fontSize: '0.63rem', color: 'var(--text-muted)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Keluar</div>
+                                <div style={{ fontSize: '0.9rem', fontWeight: '800', color: recap.keterangan?.includes('tidak') ? '#f97316' : 'var(--text-primary)', marginTop: '0.2rem' }}>
+                                  {recap.jamKeluarStr}
+                                  {recap.keterangan && <div style={{ fontSize: '0.6rem', color: '#f97316', fontWeight: '600', marginTop: '0.1rem', lineHeight: '1.2' }}>{recap.keterangan}</div>}
+                                </div>
+                              </div>
+                              <div>
+                                <div style={{ fontSize: '0.63rem', color: 'var(--text-muted)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Jam Kerja</div>
+                                <div style={{ fontSize: '0.9rem', fontWeight: '800', color: 'var(--primary)', marginTop: '0.2rem' }}>{recap.durasi || '-'}</div>
+                              </div>
+                            </div>
+                            {(recap.lembur || recap.pulangCepat) && (
+                              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                {recap.lembur && (
+                                  <span style={{ fontSize: '0.68rem', fontWeight: '700', padding: '0.2rem 0.5rem', borderRadius: '0.5rem', background: 'rgba(59,130,246,0.1)', color: '#3b82f6', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                    ⚡ Lembur: {recap.lembur}
+                                  </span>
+                                )}
+                                {recap.pulangCepat && (
+                                  <span style={{ fontSize: '0.68rem', fontWeight: '700', padding: '0.2rem 0.5rem', borderRadius: '0.5rem', background: 'rgba(239,68,68,0.08)', color: 'var(--error)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                    ⚠️ Pulang Cepat: {recap.pulangCepat}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               })()}
@@ -1556,39 +1792,39 @@ export default function Attendance() {
 
       {/* Bottom Navigation Redesign */}
       <div className="home-bottom-navbar">
-        <button 
+        <button
           className={`home-nav-item ${activeTab === 'home' ? 'active' : ''}`}
           onClick={() => setActiveTab('home')}
         >
           <Home size={20} />
           <span>Home</span>
         </button>
-        
-        <button 
+
+        <button
           className={`home-nav-item ${activeTab === 'riwayat' ? 'active' : ''}`}
           onClick={() => setActiveTab('riwayat')}
         >
           <History size={20} />
           <span>Riwayat Absen</span>
         </button>
-        
-        <div 
+
+        <div
           className="home-nav-center-btn"
           onClick={() => setActiveTab('absen')}
           title="Absen Sekarang"
         >
           <Clock size={24} />
         </div>
-        
-        <button 
+
+        <button
           className={`home-nav-item ${activeTab === 'rekap' ? 'active' : ''}`}
           onClick={() => setActiveTab('rekap')}
         >
           <BarChart3 size={20} />
           <span>Rekap</span>
         </button>
-        
-        <button 
+
+        <button
           className={`home-nav-item ${activeTab === 'profil' ? 'active' : ''}`}
           onClick={() => setActiveTab('profil')}
         >
@@ -1611,30 +1847,76 @@ export default function Attendance() {
             <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: '500' }}>Foto Absen {takingPhotoFor}</h3>
             <div style={{ width: '40px' }}></div> {/* spacer */}
           </div>
-          
+
           {/* Webcam */}
-          <div style={{ flex: 1, position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ flex: 1, position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
             <Webcam
               audio={false}
               ref={webcamRef}
               screenshotFormat="image/jpeg"
-              videoConstraints={{ facingMode: "user" }}
+              videoConstraints={{
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                facingMode: "user"
+              }}
               style={{ width: '100%', height: '100%', objectFit: 'cover' }}
             />
+
+            {/* Face Position Guide Overlay */}
+            <div style={{
+              position: 'absolute',
+              top: 0, left: 0, right: 0, bottom: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              pointerEvents: 'none',
+              zIndex: 5
+            }}>
+              <div style={{
+                width: '75vw',
+                height: '95vw',
+                maxWidth: '300px',
+                maxHeight: '380px',
+                borderRadius: '50%',
+                border: '3px dashed rgba(255, 255, 255, 0.8)',
+                boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.3)', // lighter dark mask overlay
+                position: 'relative'
+              }}>
+                <div style={{
+                  position: 'absolute',
+                  bottom: '-50px',
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  background: 'rgba(0, 0, 0, 0.7)',
+                  color: 'white',
+                  padding: '6px 14px',
+                  borderRadius: '20px',
+                  fontSize: '0.78rem',
+                  fontWeight: '500',
+                  textAlign: 'center',
+                  whiteSpace: 'nowrap',
+                  border: '1px solid rgba(255,255,255,0.25)',
+                  boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+                }}>
+                  Posisikan Wajah di Dalam Garis
+                </div>
+              </div>
+            </div>
+
             {errorMsg && (
-              <div style={{ position: 'absolute', top: '80px', left: '1rem', right: '1rem', background: 'rgba(239, 68, 68, 0.9)', color: 'white', padding: '1rem', borderRadius: '0.5rem', textAlign: 'center' }}>
+              <div style={{ position: 'absolute', top: '80px', left: '1rem', right: '1rem', background: 'rgba(239, 68, 68, 0.9)', color: 'white', padding: '1rem', borderRadius: '0.5rem', textAlign: 'center', zIndex: 12 }}>
                 {errorMsg}
               </div>
             )}
           </div>
-          
+
           {/* Footer controls */}
-          <div style={{ padding: '2rem', display: 'flex', justifyContent: 'center', background: 'rgba(0,0,0,0.5)', position: 'absolute', bottom: 0, left: 0, right: 0 }}>
-            <button 
+          <div style={{ padding: '2rem', display: 'flex', justifyContent: 'center', background: 'rgba(0,0,0,0.5)', position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 10 }}>
+            <button
               onClick={captureAndSubmit}
               disabled={loading}
-              style={{ 
-                width: '76px', height: '76px', borderRadius: '50%', 
+              style={{
+                width: '76px', height: '76px', borderRadius: '50%',
                 background: 'white', border: '4px solid rgba(255,255,255,0.5)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 cursor: loading ? 'not-allowed' : 'pointer',
@@ -1662,9 +1944,18 @@ export default function Attendance() {
             </div>
             <h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>Absen Berhasil!</h2>
             <p style={{ color: 'var(--text-muted)', marginBottom: '1rem' }}>Data absensi Anda telah tersimpan.</p>
-            
+
             {successMsg.includes('Masuk') && (
               <div style={{ background: 'rgba(16, 185, 129, 0.1)', padding: '1rem', borderRadius: '0.5rem', marginBottom: '1.5rem', textAlign: 'center' }}>
+                {latenessInfo ? (
+                  <div style={{ background: '#fef2f2', border: '1px solid #fee2e2', padding: '0.75rem', borderRadius: '0.375rem', marginBottom: '0.75rem', color: '#991b1b', fontSize: '0.85rem', fontWeight: 'bold' }}>
+                    ⚠️ Anda terlambat {latenessInfo.lateMinutes} menit (Jadwal masuk: {latenessInfo.jamMasuk})
+                  </div>
+                ) : (
+                  <div style={{ background: '#ecfdf5', border: '1px solid #d1fae5', padding: '0.75rem', borderRadius: '0.375rem', marginBottom: '0.75rem', color: '#065f46', fontSize: '0.85rem', fontWeight: 'bold' }}>
+                    ✓ Tepat Waktu (Jadwal masuk: {getJamKerja().jm})
+                  </div>
+                )}
                 <p style={{ fontSize: '1.3rem', fontWeight: 'bold', color: 'var(--primary)', marginBottom: '0.5rem', lineHeight: '1.6', fontFamily: 'serif' }} dir="rtl">
                   اللَّهُمَّ إِنِّي أَسْأَلُكَ عِلْمًا نَافِعًا، وَرِزْقًا طَيِّبًا، وَعَمَلًا مُتَقَبَّلًا
                 </p>
@@ -1677,6 +1968,7 @@ export default function Attendance() {
 
             <button className="btn btn-primary w-full" onClick={() => {
               setShowSuccessModal(false);
+              setLatenessInfo(null);
               setActiveTab('riwayat');
             }}>Tutup & Lihat Riwayat</button>
           </div>
@@ -1696,7 +1988,7 @@ export default function Attendance() {
                 <X size={18} />
               </button>
             </div>
-            
+
             <div className="notif-list">
               {notifications.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '2rem 1rem', color: 'var(--text-muted)' }}>
@@ -1717,7 +2009,7 @@ export default function Attendance() {
                 ))
               )}
             </div>
-            
+
             <button className="btn btn-secondary w-full mt-4" onClick={() => setShowNotifModal(false)}>Tutup</button>
           </div>
         </div>
@@ -1768,7 +2060,7 @@ export default function Attendance() {
                 <X size={20} />
               </button>
             </div>
-            
+
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
               {['Ahad', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'].map((dayName, idx) => {
                 let isActive = false;
@@ -1786,12 +2078,12 @@ export default function Attendance() {
                   }
                 }
                 const isToday = new Date().getDay() === idx;
-                
+
                 return (
-                  <div key={idx} style={{ 
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', 
-                    padding: '0.75rem', 
-                    borderRadius: '0.75rem', 
+                  <div key={idx} style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '0.75rem',
+                    borderRadius: '0.75rem',
                     background: isToday ? 'rgba(16, 185, 129, 0.05)' : 'white',
                     border: isToday ? '1px solid rgba(16, 185, 129, 0.2)' : '1px solid var(--border)'
                   }}>
@@ -1830,18 +2122,18 @@ export default function Attendance() {
               <br /><br />
               Sistem akan mencatat waktu pulang Anda secara otomatis pada jam pulang jadwal normal <strong>({unfinishedModalSession.jamSelesaiStr})</strong> dengan keterangan <strong>(tidak absen pulang)</strong>.
             </p>
-            
+
             <div style={{ display: 'flex', gap: '0.75rem' }}>
-              <button 
-                className="btn btn-secondary flex-1" 
+              <button
+                className="btn btn-secondary flex-1"
                 onClick={() => setUnfinishedModalSession(null)}
                 disabled={loading}
                 style={{ padding: '0.75rem', borderRadius: '0.75rem', fontSize: '0.9rem', fontWeight: '700' }}
               >
                 Batal
               </button>
-              <button 
-                className="btn flex-1" 
+              <button
+                className="btn flex-1"
                 disabled={loading}
                 onClick={async () => {
                   setLoading(true);
@@ -1849,7 +2141,7 @@ export default function Attendance() {
                   setSuccessMsg('');
                   try {
                     const targetDate = new Date(unfinishedModalSession.date);
-                    const [h, m] = unfinishedModalSession.jamSelesaiStr.split(':').map(Number);
+                    const [h, m] = String(unfinishedModalSession.jamSelesaiStr).replace(/\./g, ':').split(':').map(Number);
                     targetDate.setHours(h || 20, m || 30, 0, 0);
 
                     await callApi({
@@ -1863,22 +2155,22 @@ export default function Attendance() {
                       timestamp: targetDate.toISOString()
                     });
 
-                    setSuccessMsg(`Berhasil menyelesaikan absensi tanggal ${targetDate.toLocaleDateString('id-ID')}!`);
+                    setPopupNotif({ type: 'success', title: 'Absensi Diselesaikan', message: `Berhasil menyelesaikan absensi tanggal ${targetDate.toLocaleDateString('id-ID')}!` });
                     setUnfinishedModalSession(null);
                     fetchHistory();
                   } catch (err) {
-                    setErrorMsg(err.message || 'Gagal menyelesaikan absensi');
+                    setPopupNotif({ type: 'error', title: 'Gagal Menyelesaikan Absensi', message: err.message || 'Terjadi kesalahan.' });
                   } finally {
                     setLoading(false);
                   }
                 }}
-                style={{ 
+                style={{
                   background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
                   color: 'white',
                   border: 'none',
-                  padding: '0.75rem', 
-                  borderRadius: '0.75rem', 
-                  fontSize: '0.9rem', 
+                  padding: '0.75rem',
+                  borderRadius: '0.75rem',
+                  fontSize: '0.9rem',
                   fontWeight: '700',
                   boxShadow: '0 4px 12px rgba(217, 119, 6, 0.2)'
                 }}
@@ -1886,6 +2178,44 @@ export default function Attendance() {
                 {loading ? <div className="spinner spinner-sm" style={{ borderColor: 'white', margin: '0 auto' }}></div> : 'Ya, Selesaikan'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Custom Popup Notification Modal */}
+      {popupNotif && (
+        <div className="modal-overlay" style={{ zIndex: 9999 }} onClick={() => setPopupNotif(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '340px', borderRadius: 'var(--radius-xl)', padding: '1.75rem', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
+            <div style={{
+              width: '56px',
+              height: '56px',
+              borderRadius: '50%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: popupNotif.type === 'success' ? 'var(--success-bg)' : popupNotif.type === 'error' ? 'var(--error-bg)' : 'var(--primary-50)',
+              color: popupNotif.type === 'success' ? 'var(--success)' : popupNotif.type === 'error' ? 'var(--error)' : 'var(--primary)',
+              marginBottom: '4px'
+            }}>
+              {popupNotif.type === 'success' ? <CheckCircle size={32} /> : <AlertTriangle size={32} />}
+            </div>
+
+            <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+              {popupNotif.title}
+            </h3>
+
+            <p style={{ margin: 0, fontSize: '0.88rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              {popupNotif.message}
+            </p>
+
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => setPopupNotif(null)}
+              style={{ width: '100%', padding: '0.65rem 1rem', borderRadius: 'var(--radius-md)', fontWeight: 600, marginTop: '8px' }}
+            >
+              Tutup
+            </button>
           </div>
         </div>
       )}
