@@ -256,13 +256,16 @@ export default function Admin() {
   const reportStats = useMemo(() => {
     const masuk = filteredReport.filter(r => r.tipe === 'Masuk').length;
     const keluar = filteredReport.filter(r => r.tipe === 'Keluar').length;
+    const sakit = filteredReport.filter(r => r.tipe === 'Sakit').length;
+    const izin = filteredReport.filter(r => r.tipe === 'Izin').length;
+    const alpa = filteredReport.filter(r => r.tipe === 'Alpa').length;
     const distances = filteredReport
       .map(r => parseFloat(r.jarak))
       .filter(d => !isNaN(d));
     const avgJarak = distances.length > 0
       ? (distances.reduce((a, b) => a + b, 0) / distances.length).toFixed(1)
       : '0';
-    return { masuk, keluar, avgJarak };
+    return { masuk, keluar, sakit, izin, alpa, avgJarak };
   }, [filteredReport]);
 
   // ─── Recap Data ────────────────────────────────────────────
@@ -834,18 +837,26 @@ export default function Admin() {
         </button>
       </div>
 
-      <div className="stat-cards">
+      <div className="stat-cards" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '10px' }}>
         <div className="stat-card">
           <div className="stat-value">{reportStats.masuk}</div>
-          <div className="stat-label">Total Absen Masuk</div>
+          <div className="stat-label">Absen Masuk</div>
         </div>
         <div className="stat-card">
           <div className="stat-value">{reportStats.keluar}</div>
-          <div className="stat-label">Total Absen Keluar</div>
+          <div className="stat-label">Absen Keluar</div>
         </div>
         <div className="stat-card">
-          <div className="stat-value">{reportStats.avgJarak}m</div>
-          <div className="stat-label">Rata-rata Jarak</div>
+          <div className="stat-value" style={{ color: '#0284c7' }}>{reportStats.sakit}</div>
+          <div className="stat-label">Sakit</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-value" style={{ color: '#7c3aed' }}>{reportStats.izin}</div>
+          <div className="stat-label">Izin</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-value" style={{ color: 'var(--error)' }}>{reportStats.alpa}</div>
+          <div className="stat-label">Alpa</div>
         </div>
       </div>
 
